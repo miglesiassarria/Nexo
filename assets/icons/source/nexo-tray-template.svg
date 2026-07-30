@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Nexo monochrome tray template</title>
+  <path d="M300 764V260h108l208 331V260h108v504H616L408 433v331Z" fill="#000000"/>
+  <path d="M168 512h688M512 168v688" fill="none" stroke="#000000" stroke-width="42" stroke-linecap="round"/>
+  <circle cx="168" cy="512" r="62" fill="#000000"/>
+  <circle cx="856" cy="512" r="62" fill="#000000"/>
+  <circle cx="512" cy="168" r="62" fill="#000000"/>
+  <circle cx="512" cy="856" r="62" fill="#000000"/>
+  <circle cx="512" cy="512" r="72" fill="#000000"/>
+</svg>

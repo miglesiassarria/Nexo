@@ -1,0 +1,62 @@
+.claude/
+
+# --- Resultados de compilación (Rust) -------------------------------------
+/target
+**/target
+src-tauri/target
+**/*.rs.bk
+*.pdb
+*.profraw
+/coverage
+
+# --- Resultados de compilación (frontend) ---------------------------------
+node_modules
+dist
+dist-ssr
+.vite
+.svelte-kit
+*.tsbuildinfo
+.eslintcache
+
+# --- Generado por Tauri ---------------------------------------------------
+src-tauri/gen
+src-tauri/WixTools
+src-tauri/.cargo
+
+# --- Instaladores y paquetes empaquetados ---------------------------------
+*.dmg
+*.app
+*.msi
+*.exe
+*.AppImage
+*.deb
+*.rpm
+*.pkg
+*.tar.gz
+*.zip
+
+# --- Datos locales de Nexo: nunca en el repositorio -----------------------
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+auth.json
+
+# --- Entorno y secretos ---------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Sistema operativo y editores -----------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# --- Temporales -----------------------------------------------------------
+*.log
+*.tmp
+/scratch
