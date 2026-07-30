@@ -4,7 +4,12 @@
 
 Nexo es un proyecto para crear un punto común de acceso a modelos de inteligencia artificial. Su propósito es que una persona pueda conectar sus aplicaciones, asistentes, herramientas de desarrollo y automatizaciones a un único gateway local, en lugar de configurar cada proveedor y cada credencial por separado en cada aplicación.
 
-La idea toma como referencia conceptual a [Msty Nexus](https://msty.ai/products/nexus/), pero Nexo debe ser un proyecto independiente, más abierto y orientado a resolver algunas limitaciones de ese tipo de herramientas. El objetivo no es crear otro chat, sino una capa de infraestructura personal que controle cómo las aplicaciones acceden a diferentes modelos.
+La idea toma como referencia conceptual a [Msty Nexus](https://msty.ai/products/nexus/), pero Nexo debe ser un proyecto independiente, más abierto y orientado a resolver algunas limitaciones de ese tipo de herramientas. El objetivo no es crear otro chat, sino una capa de infraestructura personal que controle cómo las aplicaciones acceden a diferentes modelos y que, al mismo tiempo, funcione como centro de información sobre su utilización.
+
+Nexo debe ser un hub completo en dos dimensiones inseparables:
+
+- **Hub funcional:** conecta aplicaciones, modelos, proveedores, credenciales y políticas mediante una interfaz común.
+- **Hub de información:** explica qué se está usando, desde dónde, con qué frecuencia, con qué rendimiento y, cuando sea posible, con qué consumo o coste.
 
 El repositorio contiene inicialmente la definición del producto y la dirección técnica. No incluye código todavía: su función es servir como documento de partida para que otra persona pueda entender el problema, tomar decisiones de arquitectura y comenzar la implementación.
 
@@ -43,8 +48,29 @@ Las aplicaciones no deberían necesitar conocer los detalles internos de cada pr
 - Traducir formatos de petición y respuesta cuando sea necesario.
 - Gestionar la autenticación con cada proveedor.
 - Aplicar permisos, límites y políticas.
-- Registrar métricas locales de uso y rendimiento.
+- Registrar, conservar y visualizar estadísticas locales de uso y rendimiento.
 - Permitir cambiar de proveedor sin modificar todas las aplicaciones conectadas.
+
+## Aplicación multiplataforma y presencia permanente
+
+Nexo debe diseñarse desde el principio como una aplicación de escritorio multiplataforma compatible con macOS, Windows y Linux. El desarrollo y las pruebas comenzarán en macOS, que será la primera plataforma soportada, pero las decisiones de arquitectura no deben cerrar el camino a las demás.
+
+Mientras Nexo esté ejecutándose, su icono debe permanecer disponible en el área de estado del sistema:
+
+- En macOS, en la barra de menús o barra de estado.
+- En Windows, en la bandeja del sistema.
+- En Linux, mediante el mecanismo de bandeja o indicador compatible con el entorno de escritorio.
+
+La aplicación debe poder seguir funcionando en segundo plano aunque la ventana principal esté cerrada. Desde el icono se debe poder consultar de un vistazo el estado del gateway y acceder a acciones rápidas:
+
+- Saber si Nexo está activo y aceptando conexiones.
+- Ver si existe tráfico o actividad reciente.
+- Consultar el estado general de los proveedores.
+- Abrir el panel principal y sus estadísticas.
+- Pausar o reanudar el gateway.
+- Acceder a configuración, diagnóstico y cierre de la aplicación.
+
+La interfaz principal debe ofrecer la configuración completa, el catálogo de modelos, las aplicaciones autorizadas, las políticas y el panel de uso. El icono permanente debe actuar como punto de acceso rápido y como indicador de salud, no como sustituto del panel principal.
 
 ## Objetivo principal: aprovechar autenticación OAuth
 
@@ -133,19 +159,38 @@ El usuario debe poder decidir:
 
 La configuración inicial debe ser segura: escucha local, acceso LAN desactivado y aprobación explícita antes de permitir conexiones externas.
 
-### Métricas y diagnóstico
+### Hub de información, estadísticas y diagnóstico
 
-Nexo debería mostrar localmente:
+Las estadísticas de uso son una capacidad central del producto. Nexo no debe limitarse a enrutar peticiones: debe ayudar al usuario a comprender cómo utiliza la IA en el conjunto de sus aplicaciones y proveedores.
+
+Nexo debe registrar y mostrar localmente, siempre que el proveedor facilite la información necesaria:
 
 - Número de peticiones.
 - Aplicación que originó cada petición.
 - Proveedor y modelo utilizado.
-- Latencia.
-- Resultado y tipo de error.
-- Tokens o unidades de uso cuando el proveedor los comunique.
+- Fecha, hora y duración de cada operación.
+- Latencia total y, cuando pueda medirse, tiempo hasta el primer token.
+- Resultado, cancelaciones y tipo de error.
+- Tokens de entrada, tokens de salida y total consumido.
+- Otras unidades de uso para imagen, audio, vídeo, embeddings o herramientas.
+- Estimación de coste cuando exista información pública y fiable sobre precios.
 - Estado de salud de cada conexión.
+- Límites, cuotas o rate limits comunicados por el proveedor.
 
-El registro debe poder configurarse para no almacenar el contenido sensible de las conversaciones.
+El panel de información debe permitir:
+
+- Filtrar por periodo, aplicación, proveedor, modelo y tipo de operación.
+- Comparar el uso entre modelos y proveedores.
+- Consultar tendencias diarias, semanales y mensuales.
+- Identificar los modelos más utilizados, los más lentos y los que más errores producen.
+- Ver el reparto de consumo por aplicación cliente.
+- Distinguir datos reales comunicados por el proveedor de estimaciones calculadas por Nexo.
+- Exportar estadísticas en formatos abiertos para análisis externo.
+- Configurar la retención y eliminar los datos almacenados.
+
+Las métricas deben normalizarse para poder comparar proveedores sin perder los datos originales. Cuando un proveedor no comunique tokens, coste, cuota u otra métrica, Nexo debe indicarlo como dato no disponible y no inventar una cifra.
+
+El sistema debe recoger por defecto metadatos operativos, pero no el contenido completo de prompts y respuestas. El usuario debe poder configurar el nivel de registro, la retención, la exportación y el borrado. Las estadísticas deben permanecer en el equipo salvo que el usuario habilite expresamente alguna sincronización futura.
 
 ### Modelos locales
 
@@ -162,8 +207,10 @@ La primera implementación debería separar claramente estas piezas:
 5. **Almacén seguro:** guarda secretos y tokens mediante el keychain o credential vault del sistema.
 6. **Catálogo:** mantiene modelos, capacidades y estado de las conexiones.
 7. **Políticas:** aplica tokens por aplicación, scopes, límites y aprobaciones.
-8. **Observabilidad local:** recoge métricas y logs con controles de privacidad.
-9. **Interfaz de usuario:** permite configurar proveedores, autorizar cuentas, aprobar aplicaciones y consultar el uso.
+8. **Observabilidad local:** recoge, normaliza y conserva métricas y logs con controles de privacidad.
+9. **Motor de estadísticas:** agrega datos por tiempo, aplicación, proveedor y modelo para alimentar comparativas e informes.
+10. **Servicio en segundo plano:** mantiene operativo el gateway aunque la ventana principal esté cerrada.
+11. **Aplicación de escritorio:** ofrece el panel principal y la integración con la barra de estado o bandeja del sistema.
 
 La lógica específica de un proveedor no debe filtrarse al resto del sistema. Añadir un proveedor nuevo debería consistir principalmente en implementar su adaptador y describir sus capacidades.
 
@@ -171,7 +218,9 @@ La lógica específica de un proveedor no debe filtrarse al resto del sistema. A
 
 La primera versión funcional debería centrarse en un único usuario y una única máquina:
 
-- Aplicación o servicio local.
+- Aplicación de escritorio multiplataforma, desarrollada y validada inicialmente en macOS.
+- Servicio local capaz de seguir funcionando en segundo plano.
+- Icono permanente en la barra de estado de macOS mientras Nexo esté activo.
 - Gateway escuchando en localhost.
 - API compatible con OpenAI.
 - Catálogo de modelos configurados.
@@ -179,7 +228,8 @@ La primera versión funcional debería centrarse en un único usuario y una úni
 - Un adaptador oficial de Google Gemini mediante OAuth.
 - Adaptador de OpenAI mediante el mecanismo oficial disponible.
 - Tokens independientes para aplicaciones cliente.
-- Registro de métricas sin guardar por defecto el contenido de los mensajes.
+- Registro local de métricas sin guardar por defecto el contenido de los mensajes.
+- Panel inicial de estadísticas por aplicación, proveedor, modelo y periodo.
 
 El soporte multiusuario, sincronización entre equipos, acceso remoto y despliegue empresarial deben quedar fuera del primer alcance.
 
@@ -189,7 +239,9 @@ El soporte multiusuario, sincronización entre equipos, acceso remoto y desplieg
 
 - Confirmar qué accesos OAuth ofrecen oficialmente OpenAI y Google para aplicaciones de terceros.
 - Definir los proveedores y modelos prioritarios.
-- Elegir plataforma inicial: macOS, Windows, Linux o aplicación multiplataforma.
+- Elegir una tecnología de escritorio que permita desarrollar primero en macOS y distribuir después en Windows y Linux sin rediseñar el producto.
+- Definir el comportamiento del servicio en segundo plano y de la integración con la barra de estado.
+- Definir el modelo común de métricas y qué datos puede aportar realmente cada proveedor.
 - Definir el modelo de amenazas y la política de privacidad.
 
 ### Fase 1: gateway mínimo
@@ -199,6 +251,8 @@ El soporte multiusuario, sincronización entre equipos, acceso remoto y desplieg
 - Implementar catálogo, enrutado, errores y streaming.
 - Añadir pruebas de contrato.
 - Añadir proveedor mock y un primer proveedor real.
+- Ejecutar el gateway como servicio local controlado desde la aplicación de macOS.
+- Añadir el icono de la barra de estado con salud y acciones básicas.
 
 ### Fase 2: identidad y seguridad
 
@@ -213,14 +267,16 @@ El soporte multiusuario, sincronización entre equipos, acceso remoto y desplieg
 - Crear la interfaz de configuración.
 - Añadir aprobaciones de conexiones.
 - Añadir perfiles y reglas de enrutado.
-- Añadir métricas, health checks y diagnóstico.
+- Añadir el panel completo de estadísticas, comparativas, health checks y diagnóstico.
+- Añadir filtros, periodos, exportación y gestión de retención.
 - Añadir configuración de privacidad para logs.
 
 ### Fase 4: proveedores y distribución
 
 - Añadir Ollama, MLX y llama.cpp.
 - Añadir capacidades multimodales.
-- Crear instaladores para los sistemas operativos prioritarios.
+- Consolidar la versión de macOS y crear instaladores para Windows y Linux.
+- Adaptar la integración permanente al system tray de Windows y a los indicadores disponibles en Linux.
 - Documentar integraciones con clientes populares.
 
 ## Criterios de aceptación del producto
@@ -237,6 +293,11 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 8. Usar modelos locales cuando no quiera enviar datos a un proveedor cloud.
 9. Comprobar claramente qué capacidades y límites tiene cada modelo.
 10. Operar con una configuración segura por defecto.
+11. Consultar el uso por aplicación, proveedor, modelo y periodo desde un panel local.
+12. Comparar consumo, latencia, errores y coste estimado sin confundir estimaciones con datos reales.
+13. Cerrar la ventana principal sin detener el gateway.
+14. Consultar y controlar Nexo desde un icono siempre disponible en la barra de estado de macOS.
+15. Instalar futuras versiones en Windows y Linux manteniendo el mismo comportamiento esencial.
 
 ## Fuera de alcance y restricciones
 
@@ -244,6 +305,8 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 - No se deben reutilizar cookies, tokens privados ni sesiones del navegador.
 - No se debe enviar la información de una aplicación a otra sin consentimiento.
 - No se debe guardar por defecto el contenido completo de las conversaciones.
+- No se deben enviar las estadísticas fuera del equipo sin consentimiento explícito.
+- No se deben presentar costes, tokens o cuotas estimados como datos confirmados por el proveedor.
 - No se debe habilitar acceso por red sin autenticación, autorización y transporte seguro.
 - No se debe presentar la compatibilidad de formatos como equivalencia total de capacidades.
 
@@ -252,8 +315,10 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 Antes de escribir código, la persona encargada debería producir:
 
 - Una matriz de proveedores, modelos, capacidades y métodos de autenticación.
-- Una decisión documentada sobre la plataforma de escritorio o servicio local.
+- Una decisión documentada sobre la tecnología multiplataforma, justificando su integración con la barra de estado de macOS, la bandeja de Windows y los indicadores de Linux.
 - Un modelo de datos para cuentas, tokens, aplicaciones, scopes y modelos.
+- Un modelo de eventos y métricas que permita estadísticas comparables sin perder los datos originales de cada proveedor.
+- Un boceto del panel de uso y del menú disponible desde el icono de estado.
 - Un diagrama de flujo de los procesos OAuth.
 - Un contrato de proveedor independiente del formato concreto de cada API.
 - Una política de almacenamiento, logs, borrado y privacidad.
