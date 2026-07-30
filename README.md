@@ -214,6 +214,91 @@ La primera implementación debería separar claramente estas piezas:
 
 La lógica específica de un proveedor no debe filtrarse al resto del sistema. Añadir un proveedor nuevo debería consistir principalmente en implementar su adaptador y describir sus capacidades.
 
+## Stack tecnológico acordado
+
+Nexo se implementará con **Tauri 2, Rust y Svelte 5**. Esta combinación permite construir una aplicación de escritorio multiplataforma reutilizando el WebView disponible en cada sistema operativo, mantener el gateway y los procesos críticos en un núcleo nativo y evitar distribuir un runtime completo de Chromium y Node.js con la aplicación.
+
+La prioridad del stack es minimizar el consumo permanente de memoria y CPU, ya que Nexo debe poder permanecer activo durante toda la sesión del usuario aunque su ventana principal esté cerrada.
+
+| Responsabilidad | Tecnología |
+| --- | --- |
+| Aplicación de escritorio | Tauri 2 |
+| Núcleo del producto | Rust |
+| Interfaz de usuario | Svelte 5, TypeScript y Vite |
+| Gateway HTTP local | Axum y Tokio |
+| Conexiones con proveedores | Reqwest y Rustls |
+| Base de datos local | SQLite y Rusqlite |
+| OAuth | OAuth 2.0 con PKCE y callback local |
+| Credenciales | Almacén seguro nativo del sistema operativo |
+| Streaming hacia aplicaciones | Server-Sent Events |
+| Logs y diagnóstico | `tracing` |
+| Gráficas | Biblioteca ligera basada en Canvas, evitando frameworks de visualización pesados |
+| Distribución | DMG o app para macOS, MSI o NSIS para Windows y AppImage, deb o rpm para Linux |
+
+### Reparto de responsabilidades
+
+Todo el núcleo de Nexo debe implementarse en Rust:
+
+- Gateway compatible con OpenAI.
+- Enrutado y adaptadores de proveedores.
+- Flujos OAuth y renovación de tokens.
+- Políticas, permisos y tokens por aplicación.
+- Captura, normalización y consulta de estadísticas.
+- Persistencia en SQLite.
+- Acceso al almacén seguro de credenciales.
+- Servicio en segundo plano e integración con el sistema operativo.
+
+La interfaz Svelte debe limitarse a presentar información y enviar acciones al núcleo. No debe contener lógica necesaria para que el gateway funcione. Esto permitirá mantener Nexo operativo sin una ventana abierta y hará posible reemplazar o ampliar la interfaz sin reescribir el motor.
+
+### Modelo de ejecución ligero
+
+La primera versión debe funcionar en un único proceso:
+
+```text
+Proceso Nexo
+├── Icono de la barra de estado
+├── Gateway HTTP local
+├── Adaptadores de proveedores
+├── Gestor OAuth
+├── Motor de estadísticas
+├── Base de datos SQLite
+└── WebView del panel, visible solo cuando se abre
+```
+
+Al cerrar la ventana principal, Nexo no debe finalizar:
+
+- El gateway continuará aceptando conexiones.
+- El icono permanecerá en la barra de estado o bandeja del sistema.
+- Rust continuará gestionando proveedores y estadísticas.
+- La ventana y su WebView podrán ocultarse o destruirse para reducir el consumo.
+- El panel se volverá a mostrar o crear cuando el usuario lo solicite.
+
+No se utilizará inicialmente un daemon, sidecar o servicio independiente. Esa separación solo se planteará si aparecen necesidades reales de aislamiento, recuperación independiente o ejecución sin una sesión gráfica. Evitar procesos adicionales simplifica el producto y reduce su consumo base.
+
+### Persistencia y estadísticas
+
+SQLite será la única base de datos y se ejecutará embebida en la aplicación. Las peticiones se almacenarán como eventos compactos y las agregaciones estadísticas se calcularán por lotes o de forma incremental, evitando recorrer continuamente todo el histórico.
+
+La base de datos contendrá métricas y configuración no sensible. Los prompts y respuestas no se guardarán por defecto. Los access tokens, refresh tokens, API keys y secretos OAuth no deben almacenarse en SQLite.
+
+### Credenciales por plataforma
+
+Nexo utilizará el almacén seguro disponible en cada sistema:
+
+- Keychain en macOS.
+- Credential Manager en Windows.
+- Secret Service o alternativa equivalente en Linux.
+
+La base de datos podrá guardar referencias y metadatos de las credenciales, pero nunca el secreto en texto plano.
+
+### Motivos para descartar otras opciones
+
+- **Electron:** facilita el desarrollo con JavaScript, pero incorpora Chromium y Node.js y utiliza varios procesos. Su coste base no encaja con una aplicación que debe permanecer activa todo el día consumiendo lo mínimo posible.
+- **Flutter:** ofrece buen soporte multiplataforma, pero distribuye su propio motor gráfico y runtime. Sus ventajas son mayores en aplicaciones centradas en interfaces visuales complejas que en un gateway que trabaja principalmente en segundo plano.
+- **Tres aplicaciones nativas independientes:** permitirían una integración óptima con cada sistema, pero obligarían a mantener implementaciones separadas para macOS, Windows y Linux.
+
+La elección de Tauri debe validarse durante el primer prototipo midiendo el consumo real en reposo, con tráfico y con el panel abierto. Si las mediciones no cumplen los objetivos del proyecto, se reevaluará la capa de escritorio sin reemplazar el núcleo Rust.
+
 ## Alcance inicial recomendado
 
 La primera versión funcional debería centrarse en un único usuario y una única máquina:
@@ -239,7 +324,7 @@ El soporte multiusuario, sincronización entre equipos, acceso remoto y desplieg
 
 - Confirmar qué accesos OAuth ofrecen oficialmente OpenAI y Google para aplicaciones de terceros.
 - Definir los proveedores y modelos prioritarios.
-- Elegir una tecnología de escritorio que permita desarrollar primero en macOS y distribuir después en Windows y Linux sin rediseñar el producto.
+- Validar Tauri 2, Rust y Svelte 5 mediante un prototipo mínimo en macOS y mediciones reproducibles de memoria, CPU y tiempo de arranque.
 - Definir el comportamiento del servicio en segundo plano y de la integración con la barra de estado.
 - Definir el modelo común de métricas y qué datos puede aportar realmente cada proveedor.
 - Definir el modelo de amenazas y la política de privacidad.
@@ -315,7 +400,8 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 Antes de escribir código, la persona encargada debería producir:
 
 - Una matriz de proveedores, modelos, capacidades y métodos de autenticación.
-- Una decisión documentada sobre la tecnología multiplataforma, justificando su integración con la barra de estado de macOS, la bandeja de Windows y los indicadores de Linux.
+- Un registro de decisión arquitectónica sobre Tauri 2, Rust y Svelte 5, con objetivos medibles de memoria, CPU y tiempo de arranque.
+- Un prototipo técnico que valide la ejecución en segundo plano, la barra de estado de macOS y el ciclo de vida del WebView.
 - Un modelo de datos para cuentas, tokens, aplicaciones, scopes y modelos.
 - Un modelo de eventos y métricas que permita estadísticas comparables sin perder los datos originales de cada proveedor.
 - Un boceto del panel de uso y del menú disponible desde el icono de estado.
@@ -331,3 +417,6 @@ El resultado de esa tarea debe permitir implementar el gateway mínimo sin depen
 - [Msty Nexus](https://msty.ai/products/nexus/), referencia de producto para gateway local, catálogo, credenciales, tokens por aplicación y observabilidad.
 - [Gemini API: autenticación con OAuth](https://ai.google.dev/gemini-api/docs/oauth), referencia oficial para el flujo OAuth de la API de Gemini.
 - [OpenAI: Sign in with ChatGPT](https://help.openai.com/en/articles/20001410-sign-in-with-chatgpt), referencia oficial sobre autenticación de identidad y límites de lo que ese login concede a aplicaciones externas.
+- [Tauri 2: arquitectura](https://v2.tauri.app/es/concept/architecture/), referencia para el núcleo Rust, WebViews y soporte multiplataforma.
+- [Tauri 2: distribución](https://v2.tauri.app/distribute/), referencia para los formatos de instalación y firma en macOS, Windows y Linux.
+- [Tauri 2: plugins oficiales](https://v2.tauri.app/plugin/), referencia para system tray, autostart, actualización, SQL y almacenamiento seguro.
