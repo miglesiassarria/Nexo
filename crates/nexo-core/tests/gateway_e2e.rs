@@ -804,3 +804,192 @@ async fn a_local_server_that_is_down_gives_a_useful_error_not_a_generic_502() {
     assert_eq!(row.error_kind.as_deref(), Some("transport"));
     assert_eq!(row.credential_kind, "local");
 }
+
+// ---------------------------------------------------------------------------
+// OpenCode Zen real. Marcadas `#[ignore]` porque exigen una clave:
+//   NEXO_TEST_ZEN_API_KEY=sk-... cargo test -p nexo-core --test gateway_e2e -- --ignored zen
+// ---------------------------------------------------------------------------
+
+/// Monta un Nexo con OpenCode Zen añadido como proveedor genérico y una
+/// aplicación con acceso. Devuelve `None` si no hay clave en el entorno, para que
+/// la prueba se salte de forma explícita en lugar de fallar por algo que no es un
+/// defecto del código.
+async fn start_with_zen() -> Option<Harness> {
+    let Ok(key) = std::env::var("NEXO_TEST_ZEN_API_KEY") else {
+        eprintln!("NEXO_TEST_ZEN_API_KEY no está definida; prueba omitida");
+        return None;
+    };
+
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    nexo.add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", &key)
+        .await
+        .expect("añadir el proveedor no debe fallar con una clave válida");
+
+    let issued = nexo.db().create_app("prueba-zen", None).expect("app");
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "opencode-zen".into(),
+                credential_kind: "api_key".into(),
+                model_pattern: "*".into(),
+                allow_tools: true,
+                allow_multimodal: false,
+                log_content: false,
+            },
+        )
+        .expect("grant");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Some(Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http: reqwest::Client::new(),
+    })
+}
+
+const ZEN_FREE_MODEL: &str = "opencode-zen/deepseek-v4-flash-free";
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_ZEN_API_KEY"]
+async fn zen_discovers_its_real_catalog_through_the_generic_adapter() {
+    let Some(h) = start_with_zen().await else { return };
+
+    let body: Value = h
+        .http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let models = body["data"].as_array().unwrap();
+    // Criterio 9: Zen tiene 60 modelos reales el 2026-07-31; se admite margen
+    // por si cambia el catálogo entre esa fecha y la ejecución de la prueba.
+    assert!(models.len() > 30, "esperaba decenas de modelos, llegaron {}", models.len());
+    assert!(
+        models.iter().any(|m| m["id"] == ZEN_FREE_MODEL),
+        "el modelo gratuito de prueba debe estar en el catálogo real"
+    );
+    for m in models {
+        assert!(m["id"].as_str().unwrap().starts_with("opencode-zen/"));
+        assert_eq!(m["nexo"]["credential_kind"], "api_key");
+    }
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_ZEN_API_KEY"]
+async fn zen_chat_with_a_free_model_works_end_to_end() {
+    let Some(h) = start_with_zen().await else { return };
+
+    let resp = h
+        .post_chat(json!({
+            "model": ZEN_FREE_MODEL,
+            "messages": [{"role": "user", "content": "Responde solo: OK"}],
+            "max_tokens": 20
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert!(!body["choices"][0]["message"]["content"].is_null());
+    assert!(body["usage"]["total_tokens"].as_u64().unwrap() > 0);
+    // Verificado en T0: Zen informa de tokens de verdad, no es una estimación.
+    assert_eq!(body["usage"]["nexo"]["usage_source"], "reported");
+
+    let row = h
+        .nexo
+        .db()
+        .recent_requests(5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .expect("la petición queda registrada");
+    assert_eq!(row.status, "ok");
+    assert_eq!(row.credential_kind, "api_key");
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_ZEN_API_KEY"]
+async fn zen_streaming_with_a_free_model_reassembles_correctly() {
+    let Some(h) = start_with_zen().await else { return };
+
+    let raw = h
+        .post_chat(json!({
+            "model": ZEN_FREE_MODEL,
+            "messages": [{"role": "user", "content": "Cuenta: 1 2 3"}],
+            "stream": true,
+            "max_tokens": 30
+        }))
+        .await
+        .text()
+        .await
+        .unwrap();
+
+    assert!(raw.trim_end().ends_with("data: [DONE]"));
+    let chunks = parse_sse(&raw);
+
+    let ids: std::collections::HashSet<&str> =
+        chunks.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(ids.len(), 1, "un solo id para toda la respuesta");
+
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert!(!text.is_empty());
+
+    let finishes = chunks
+        .iter()
+        .filter(|c| !c["choices"][0]["finish_reason"].is_null())
+        .count();
+    assert_eq!(finishes, 1);
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_ZEN_API_KEY"]
+async fn zen_insufficient_balance_is_a_clear_credits_error_not_invalid_key() {
+    // Criterio 8: el caso real que el usuario vio en Msty. Un modelo de pago sin
+    // saldo debe llegar como error de saldo, no como clave inválida — y no debe
+    // pedir reconectar la cuenta, porque reconectar no soluciona esto.
+    let Some(h) = start_with_zen().await else { return };
+
+    let resp = h
+        .post_chat(json!({
+            "model": "opencode-zen/claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+
+    if resp.status().is_success() {
+        eprintln!("la cuenta de prueba tiene saldo hoy; el caso de error no se ejerce");
+        return;
+    }
+
+    let body: Value = resp.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("saldo"),
+        "debe explicar que es un problema de saldo, no de clave: {message}"
+    );
+    assert_eq!(
+        body["error"]["nexo"]["reauth_required"], false,
+        "reconectar la cuenta no arregla un problema de saldo"
+    );
+}

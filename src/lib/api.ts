@@ -148,6 +148,22 @@ export interface LmStudioStatus {
   detail: string | null;
 }
 
+/** Proveedor OpenAI-compatible añadido por el usuario: nombre, URL y clave. */
+export interface CustomProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  compat: string;
+  created_at: number;
+}
+
+/** Atajo con la URL ya rellena, como OpenCode Zen. */
+export interface ProviderPreset {
+  suggested_name: string;
+  base_url: string;
+  docs_url: string;
+}
+
 export interface LocalModelDetail {
   api_id: string;
   kind: string;
@@ -198,6 +214,14 @@ export const api = {
   setLmstudioUrl: (baseUrl: string) =>
     invoke<LmStudioStatus>("set_lmstudio_url", { baseUrl }),
   lmstudioModels: () => invoke<LocalModelDetail[]>("lmstudio_models"),
+
+  providerPresets: () => invoke<ProviderPreset[]>("provider_presets"),
+  listCustomProviders: () => invoke<CustomProvider[]>("list_custom_providers"),
+  addCustomProvider: (name: string, baseUrl: string, apiKey: string) =>
+    invoke<CustomProvider>("add_custom_provider", { name, baseUrl, apiKey }),
+  updateCustomProviderUrl: (id: string, baseUrl: string) =>
+    invoke<void>("update_custom_provider_url", { id, baseUrl }),
+  removeCustomProvider: (id: string) => invoke<void>("remove_custom_provider", { id }),
 
   listApps: () => invoke<App[]>("list_apps"),
   createApp: (name: string, notes?: string) =>

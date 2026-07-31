@@ -4,9 +4,10 @@
 use crate::state::{map_err, AppState, CmdResult};
 use nexo_core::apps::{App, Grant, IssuedApp, Limit};
 use nexo_core::config::Settings;
-use nexo_core::db::{Account, CatalogRow};
+use nexo_core::db::{Account, CatalogRow, CustomProvider};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
+use nexo_core::provider::openai_compat::{self, ProviderPreset};
 use nexo_core::provider::CredentialKind;
 use nexo_core::service::{CatalogRefresh, GatewayStatus, GrantableRoute};
 use nexo_core::util;
@@ -139,6 +140,49 @@ pub async fn set_lmstudio_url(
 pub async fn lmstudio_models(state: State<'_, AppState>) -> CmdResult<Vec<LocalModelDetail>> {
     let nexo = state.nexo.clone();
     Ok(nexo.lmstudio_model_details().await)
+}
+
+// -- Proveedores OpenAI-compatible añadidos por el usuario ------------------
+
+/// Atajos con la URL ya rellena, como OpenCode Zen: la interfaz solo pide la clave.
+#[tauri::command]
+pub fn provider_presets() -> Vec<ProviderPreset> {
+    openai_compat::presets().to_vec()
+}
+
+#[tauri::command]
+pub fn list_custom_providers(state: State<'_, AppState>) -> CmdResult<Vec<CustomProvider>> {
+    state.nexo.custom_providers().map_err(map_err)
+}
+
+/// Añade un proveedor: nombre, dirección y clave. La clave va al Keychain.
+#[tauri::command]
+pub async fn add_custom_provider(
+    state: State<'_, AppState>,
+    name: String,
+    base_url: String,
+    api_key: String,
+) -> CmdResult<CustomProvider> {
+    let nexo = state.nexo.clone();
+    nexo.add_custom_provider(&name, &base_url, &api_key)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+pub async fn update_custom_provider_url(
+    state: State<'_, AppState>,
+    id: String,
+    base_url: String,
+) -> CmdResult<()> {
+    let nexo = state.nexo.clone();
+    nexo.update_custom_provider_url(&id, &base_url).await.map_err(map_err)
+}
+
+/// Borra el proveedor, su cuenta y su clave del Keychain.
+#[tauri::command]
+pub fn remove_custom_provider(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.nexo.remove_custom_provider(&id).map_err(map_err)
 }
 
 // -- Aplicaciones ----------------------------------------------------------

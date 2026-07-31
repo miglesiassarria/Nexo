@@ -5,7 +5,9 @@
     formatTime,
     kindLabel,
     type Account,
+    type CustomProvider,
     type LmStudioStatus,
+    type ProviderPreset,
     type RiskNotice,
   } from "../api";
 
@@ -26,6 +28,81 @@
   let lmstudio = $state<LmStudioStatus | null>(null);
   let lmstudioUrl = $state("");
   let checkingLmstudio = $state(false);
+
+  let presets = $state<ProviderPreset[]>([]);
+  let customProviders = $state<CustomProvider[]>([]);
+  let newProviderName = $state("");
+  let newProviderUrl = $state("");
+  let newProviderKey = $state("");
+  let addingProvider = $state(false);
+  let editingUrlFor = $state<string | null>(null);
+  let editingUrlValue = $state("");
+
+  async function loadCustomProviders() {
+    try {
+      presets = await api.providerPresets();
+      customProviders = await api.listCustomProviders();
+      if (!newProviderName && !newProviderUrl && presets.length > 0) {
+        usePreset(presets[0]);
+      }
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  /** Rellena nombre y URL desde un atajo; solo queda pedir la clave. */
+  function usePreset(preset: ProviderPreset) {
+    newProviderName = preset.suggested_name;
+    newProviderUrl = preset.base_url;
+    newProviderKey = "";
+  }
+
+  async function addProvider() {
+    addingProvider = true;
+    error = null;
+    try {
+      await api.addCustomProvider(newProviderName, newProviderUrl, newProviderKey);
+      info = `Proveedor «${newProviderName}» conectado.`;
+      newProviderName = "";
+      newProviderUrl = "";
+      newProviderKey = "";
+      await loadCustomProviders();
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      addingProvider = false;
+    }
+  }
+
+  async function removeProvider(p: CustomProvider) {
+    error = null;
+    try {
+      await api.removeCustomProvider(p.id);
+      info = `Proveedor «${p.name}» desconectado y clave eliminada del equipo.`;
+      await loadCustomProviders();
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  function startEditUrl(p: CustomProvider) {
+    editingUrlFor = p.id;
+    editingUrlValue = p.base_url;
+  }
+
+  async function saveEditUrl(p: CustomProvider) {
+    error = null;
+    try {
+      await api.updateCustomProviderUrl(p.id, editingUrlValue);
+      editingUrlFor = null;
+      await loadCustomProviders();
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
 
   async function loadLmstudio() {
     try {
@@ -136,6 +213,7 @@
   $effect(() => {
     load();
     loadLmstudio();
+    loadCustomProviders();
   });
 </script>
 
@@ -276,6 +354,83 @@
       Se guarda en el Keychain del sistema, nunca en la base de datos ni en un fichero.
     </p>
   </section>
+
+  <section class="card stack">
+    <div>
+      <h2>Otros proveedores OpenAI-compatible</h2>
+      <p class="muted">
+        Cualquier servicio que hable el formato de OpenAI: OpenCode Zen, OpenRouter,
+        un proxy propio… Puedes añadir varios, cada uno con su nombre.
+      </p>
+    </div>
+
+    {#if presets.length > 0}
+      <div class="row" style="flex-wrap: wrap">
+        {#each presets as preset (preset.suggested_name)}
+          <button onclick={() => usePreset(preset)}>
+            Usar {preset.suggested_name}
+          </button>
+        {/each}
+      </div>
+      <p class="muted small">
+        Nombre y dirección ya vienen rellenos: solo tienes que pegar la clave.
+      </p>
+    {/if}
+
+    {#each customProviders as provider (provider.id)}
+      <div class="account">
+        <div class="stack" style="gap: 0.2rem; flex: 1">
+          <div class="row">
+            <strong>{provider.name}</strong>
+            <span class="badge key">API key</span>
+          </div>
+          {#if editingUrlFor === provider.id}
+            <div class="row">
+              <input bind:value={editingUrlValue} style="font-size: 0.8rem" />
+              <button onclick={() => saveEditUrl(provider)}>Guardar</button>
+              <button class="ghost" onclick={() => (editingUrlFor = null)}>Cancelar</button>
+            </div>
+          {:else}
+            <button class="ghost small-link" onclick={() => startEditUrl(provider)}>
+              <code>{provider.base_url}</code>
+            </button>
+          {/if}
+        </div>
+        <button class="danger" onclick={() => removeProvider(provider)}>Desconectar</button>
+      </div>
+    {/each}
+
+    <div class="key-form three">
+      <div>
+        <label for="providername">Nombre</label>
+        <input id="providername" bind:value={newProviderName} placeholder="OpenCode Zen" />
+      </div>
+      <div>
+        <label for="providerurl">URL base</label>
+        <input
+          id="providerurl"
+          bind:value={newProviderUrl}
+          placeholder="https://opencode.ai/zen/v1"
+        />
+      </div>
+      <div>
+        <label for="providerkey">API key</label>
+        <input id="providerkey" type="password" bind:value={newProviderKey} placeholder="sk-…" />
+      </div>
+      <button
+        class="primary"
+        onclick={addProvider}
+        disabled={addingProvider || !newProviderName.trim() || !newProviderUrl.trim() || !newProviderKey.trim()}
+      >
+        {addingProvider ? "Conectando…" : "Añadir"}
+      </button>
+    </div>
+    <p class="muted small">
+      La clave va al Keychain del sistema, como las demás. El catálogo se cruza con
+      <code>models.dev</code> para saber sus capacidades y su precio; lo que no
+      aparezca ahí se ofrece solo como texto.
+    </p>
+  </section>
 </div>
 
 {#snippet accountRow(account: Account)}
@@ -362,6 +517,20 @@
     grid-template-columns: 2fr 1fr auto;
     gap: 0.6rem;
     align-items: end;
+  }
+
+  .key-form.three {
+    grid-template-columns: 1.2fr 1.6fr 1.2fr auto;
+  }
+
+  .small-link {
+    padding: 0;
+    text-align: left;
+    justify-content: flex-start;
+  }
+
+  .small-link code {
+    font-size: 0.78rem;
   }
 
   .small {

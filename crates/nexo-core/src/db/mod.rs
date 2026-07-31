@@ -430,6 +430,227 @@ impl ResolvedModel {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proveedores añadidos por el usuario (nombre, dirección y clave)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub compat: String,
+    pub created_at: i64,
+}
+
+impl Db {
+    /// Da de alta un proveedor añadido por el usuario. El `id` es el slug del
+    /// nombre y es la clave primaria: dos proveedores con el mismo nombre
+    /// (o que slugifiquen igual) no pueden coexistir.
+    pub fn create_custom_provider(&self, name: &str, base_url: &str) -> Result<CustomProvider> {
+        let name = name.trim();
+        let base_url = base_url.trim().trim_end_matches('/');
+        if name.is_empty() {
+            return Err(CoreError::Config("el proveedor necesita un nombre".into()));
+        }
+        if base_url.is_empty() {
+            return Err(CoreError::Config("el proveedor necesita una URL".into()));
+        }
+        let id = crate::util::slugify(name);
+        if id.is_empty() {
+            return Err(CoreError::Config(
+                "el nombre no produce un identificador válido; añade alguna letra o número".into(),
+            ));
+        }
+
+        let provider = CustomProvider {
+            id: id.clone(),
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            compat: "openai_compat".into(),
+            created_at: util::now_ms(),
+        };
+
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO custom_providers (id, name, base_url, compat, created_at)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![provider.id, provider.name, provider.base_url, provider.compat, provider.created_at],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                CoreError::Config(format!(
+                    "ya existe un proveedor con un nombre que produce el mismo identificador «{id}»; \
+                     elige otro nombre"
+                ))
+            }
+            other => CoreError::Db(other),
+        })?;
+        Ok(provider)
+    }
+
+    pub fn custom_providers(&self) -> Result<Vec<CustomProvider>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, base_url, compat, created_at
+             FROM custom_providers ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CustomProvider {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                base_url: r.get(2)?,
+                compat: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn custom_provider(&self, id: &str) -> Result<Option<CustomProvider>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, base_url, compat, created_at
+             FROM custom_providers WHERE id = ?1",
+        )?;
+        Ok(stmt
+            .query_row(params![id], |r| {
+                Ok(CustomProvider {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    base_url: r.get(2)?,
+                    compat: r.get(3)?,
+                    created_at: r.get(4)?,
+                })
+            })
+            .optional()?)
+    }
+
+    /// Cambia la URL de un proveedor añadido. Como la dirección viaja en la
+    /// credencial de la cuenta (no en el proveedor), el llamador debe actualizar
+    /// también `accounts.external_id` para que surta efecto sin reiniciar.
+    pub fn update_custom_provider_url(&self, id: &str, base_url: &str) -> Result<()> {
+        let base_url = base_url.trim().trim_end_matches('/');
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE custom_providers SET base_url = ?2 WHERE id = ?1",
+            params![id, base_url],
+        )?;
+        if n == 0 {
+            return Err(CoreError::NotFound(format!("no hay proveedor con id {id}")));
+        }
+        Ok(())
+    }
+
+    /// Borra el proveedor. No borra la cuenta ni el catálogo asociados: eso lo
+    /// decide quien orquesta (el servicio), porque implica también borrar el
+    /// secreto del Keychain.
+    pub fn delete_custom_provider(&self, id: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM custom_providers WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod custom_provider_tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn creates_and_lists_a_provider() {
+        let db = db();
+        let p = db.create_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1").unwrap();
+        assert_eq!(p.id, "opencode-zen");
+        assert_eq!(p.base_url, "https://opencode.ai/zen/v1");
+        assert_eq!(p.compat, "openai_compat");
+        assert_eq!(db.custom_providers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trailing_slash_in_url_is_stripped() {
+        let db = db();
+        let p = db.create_custom_provider("Runpod", "https://runpod.io/v1/").unwrap();
+        assert_eq!(p.base_url, "https://runpod.io/v1");
+    }
+
+    #[test]
+    fn duplicate_name_is_rejected_not_overwritten() {
+        // Criterio 3 de la especificación 0002.
+        let db = db();
+        db.create_custom_provider("Runpod", "https://a.example/v1").unwrap();
+        let err = db
+            .create_custom_provider("Runpod", "https://b.example/v1")
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Config(_)));
+        assert!(err.to_string().contains("runpod"));
+
+        // No se sobrescribió: sigue apuntando a la primera URL.
+        let providers = db.custom_providers().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].base_url, "https://a.example/v1");
+    }
+
+    #[test]
+    fn names_that_slugify_the_same_also_collide() {
+        // «Mi Proveedor» y «mi   proveedor!!» producen el mismo id: es la
+        // colisión que la clave primaria debe atrapar, no solo el nombre exacto.
+        let db = db();
+        db.create_custom_provider("Mi Proveedor", "https://a.example/v1").unwrap();
+        assert!(db
+            .create_custom_provider("mi   proveedor!!", "https://b.example/v1")
+            .is_err());
+    }
+
+    #[test]
+    fn blank_name_or_url_is_rejected() {
+        let db = db();
+        assert!(db.create_custom_provider("   ", "https://a.example").is_err());
+        assert!(db.create_custom_provider("Runpod", "  ").is_err());
+    }
+
+    #[test]
+    fn only_punctuation_name_is_rejected_with_a_clear_reason() {
+        let db = db();
+        let err = db.create_custom_provider("···", "https://a.example").unwrap_err();
+        assert!(matches!(err, CoreError::Config(_)));
+    }
+
+    #[test]
+    fn deleting_an_unknown_provider_is_not_an_error() {
+        assert!(db().delete_custom_provider("no-existe").is_ok());
+    }
+
+    #[test]
+    fn updating_url_of_an_unknown_provider_fails_clearly() {
+        assert!(matches!(
+            db().update_custom_provider_url("no-existe", "https://x"),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_url_strips_trailing_slash_too() {
+        let db = db();
+        db.create_custom_provider("Runpod", "https://a.example/v1").unwrap();
+        db.update_custom_provider_url("runpod", "https://b.example/v1/").unwrap();
+        assert_eq!(
+            db.custom_provider("runpod").unwrap().unwrap().base_url,
+            "https://b.example/v1"
+        );
+    }
+
+    #[test]
+    fn get_by_id_returns_none_when_absent() {
+        assert!(db().custom_provider("no-existe").unwrap().is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

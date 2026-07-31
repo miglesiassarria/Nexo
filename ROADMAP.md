@@ -96,7 +96,15 @@ Dos spikes de código, no documentos.
 - [ ] Capacidades multimodales de extremo a extremo.
 - [x] Catálogo descubierto del proveedor en la vía de suscripción, con el
       manifiesto local como respaldo.
-- [ ] Lo mismo para la vía de API key, cuyo endpoint no publica capacidades.
+- [x] Proveedores OpenAI-compatible añadidos por el usuario, con varios simultáneos
+      y catálogo cruzado con `models.dev`
+      ([spec 0002](specs/0002-proveedores-genericos-y-opencode-zen/spec.md)).
+- [x] OpenCode Zen como atajo del tipo anterior, verificado con 60 modelos reales.
+- [ ] Proveedores Anthropic-compatible añadidos por el usuario. Aplazado a
+      petición del usuario: era la única parte no verificable de la spec 0002
+      (ningún modelo gratuito de Zen habla ese formato). Retomar cuando haya saldo
+      en Zen o una clave directa de Anthropic para probar contra la realidad.
+- [ ] Lo mismo para la vía de API key de OpenAI, cuyo endpoint no publica capacidades.
 
 ### Fase 5 — Distribución
 

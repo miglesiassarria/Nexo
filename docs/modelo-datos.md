@@ -207,6 +207,41 @@ Solo configuración no sensible. Claves iniciales previstas: puerto de escucha, 
 
 La retención se aplica sobre `requests` y sobre la tabla de contenido, nunca sobre `usage_hourly`: el histórico agregado sobrevive al borrado del detalle, que es lo que permite conservar tendencias largas con poco espacio.
 
+## Proveedores añadidos por el usuario
+
+Migración v2 (spec 0002). Nombre, dirección y —en el Keychain, nunca aquí— la clave
+de cualquier servicio que hable el formato de OpenAI: OpenCode Zen, OpenRouter, un
+proxy propio.
+
+```sql
+CREATE TABLE custom_providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  -- Formato de cable. Hoy solo 'openai_compat'; el de Anthropic queda aplazado.
+  compat     TEXT NOT NULL DEFAULT 'openai_compat',
+  created_at INTEGER NOT NULL
+);
+```
+
+`id` es el slug derivado del nombre que le da el usuario y es la clave primaria: dos
+proveedores que produzcan el mismo slug no pueden coexistir, sin comprobación
+aparte. No se deducen de `accounts` —donde `provider_id` es un `TEXT` libre— porque
+hay que distinguir un proveedor añadido a propósito de un `provider_id` desconocido
+por corrupción, y porque el nombre legible debe sobrevivir a desconectar la cuenta
+sin borrar el proveedor.
+
+La dirección real que usa el adaptador en cada petición es la de `accounts.external_id`,
+no la de esta tabla: es lo que permite cambiar la URL sin reiniciar Nexo (el mismo
+mecanismo que usa LM Studio). Esta tabla es la fuente para la interfaz y para volver
+a crear la cuenta si hiciera falta.
+
+Las capacidades y el precio de estos proveedores no viven en SQLite: se cruzan en
+memoria contra una caché en disco de `models.dev` (ver
+`crates/nexo-core/src/catalog/models_dev.rs`), refrescada semanalmente. Son 3,3 MB de
+miles de modelos que no interesa duplicar en la base de datos para leerlos una vez
+por sincronización.
+
 ## Migraciones
 
 Versionadas y aplicadas al arrancar, con la versión en `PRAGMA user_version`. Solo hacia adelante: no hay `down`. Antes de aplicar una migración, copia de seguridad del fichero de base de datos con el número de versión de origen en el nombre.

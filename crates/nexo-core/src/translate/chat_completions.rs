@@ -134,8 +134,17 @@ fn message_to_wire(m: &crate::provider::Message) -> Value {
     Value::Object(obj)
 }
 
+/// Rastrea qué `id` de llamada a herramienta corresponde a cada índice del stream.
+///
+/// El protocolo estándar de OpenAI —y lo que de verdad envían los proveedores,
+/// verificado contra OpenCode Zen el 2026-07-31— manda el `id` solo en el primer
+/// chunk de cada llamada; los fragmentos de argumentos que siguen solo llevan el
+/// `index`. Sin este rastreo, esos fragmentos se etiquetaban con un id inventado
+/// que nunca coincidía con el de la llamada, y los argumentos se perdían.
+pub type ToolCallIds = std::collections::HashMap<u64, String>;
+
 /// Traduce un chunk de `chat/completions` al vocabulario interno.
-pub fn translate_chunk(chunk: &Value) -> Vec<ChatEvent> {
+pub fn translate_chunk(chunk: &Value, tool_ids: &mut ToolCallIds) -> Vec<ChatEvent> {
     let mut events = Vec::new();
 
     if let Some(usage) = chunk.get("usage").filter(|u| !u.is_null()) {
@@ -173,26 +182,33 @@ pub fn translate_chunk(chunk: &Value) -> Vec<ChatEvent> {
         events.push(ChatEvent::TextDelta { text: text.to_string() });
     }
 
-    if let Some(text) = choice
+    // Dos nombres de campo distintos observados entre proveedores para lo mismo:
+    // DeepSeek (vía Zen) usa `reasoning_content`; otro modelo de la misma pasarela
+    // usa `reasoning` a secas. Se comprueban los dos.
+    let reasoning_text = choice
         .pointer("/delta/reasoning_content")
+        .or_else(|| choice.pointer("/delta/reasoning"))
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| !s.is_empty());
+    if let Some(text) = reasoning_text {
         events.push(ChatEvent::ReasoningDelta { text: text.to_string() });
     }
 
     if let Some(calls) = choice.pointer("/delta/tool_calls").and_then(|v| v.as_array()) {
         for call in calls {
-            let id = call
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    format!(
-                        "call_{}",
-                        call.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
-                    )
-                });
+            let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            let id = match call.get("id").and_then(|v| v.as_str()) {
+                // El id solo llega en el primer chunk de la llamada: se recuerda
+                // para los fragmentos de argumentos que vienen después sin él.
+                Some(id) => {
+                    tool_ids.insert(index, id.to_string());
+                    id.to_string()
+                }
+                None => tool_ids
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("call_{index}")),
+            };
             if let Some(name) = call.pointer("/function/name").and_then(|v| v.as_str()) {
                 events.push(ChatEvent::ToolCallStart { id: id.clone(), name: name.to_string() });
             }
@@ -231,6 +247,7 @@ fn finish_reason(raw: &str) -> FinishReason {
 /// mida desde que el proveedor empieza a hablar y no desde que se abrió la conexión.
 pub fn stream_from_response(resp: reqwest::Response) -> EventStream {
     let mut started = false;
+    let mut tool_ids = ToolCallIds::new();
     let stream = resp.bytes_stream().eventsource().flat_map(move |item| {
         let out: Vec<Result<ChatEvent, AdapterError>> = match item {
             Err(e) => vec![Err(AdapterError::Transport { detail: e.to_string() })],
@@ -253,7 +270,7 @@ pub fn stream_from_response(resp: reqwest::Response) -> EventStream {
                                         .map(str::to_string),
                                 }));
                             }
-                            evs.extend(translate_chunk(&chunk).into_iter().map(Ok));
+                            evs.extend(translate_chunk(&chunk, &mut tool_ids).into_iter().map(Ok));
                             evs
                         }
                     }
@@ -266,7 +283,25 @@ pub fn stream_from_response(resp: reqwest::Response) -> EventStream {
 }
 
 /// Clasificación común de errores HTTP de un servidor `chat/completions`.
+///
+/// Se intenta primero leer el cuerpo como `{"error": {"type": "...", "message":
+/// "..."}}`, y solo se cae al HTTP status si no hay ese sobre. Hace falta: OpenCode
+/// Zen devuelve `401` para «saldo insuficiente», «modelo no soportado» y «clave
+/// inválida» por igual (verificado el 2026-07-31), así que confiar en el status
+/// habría mostrado «clave inválida» cuando el problema real era el saldo — que es
+/// exactamente lo que le pasó al usuario probando en Msty.
 pub fn classify_http_error(
+    status: u16,
+    retry_after: Option<std::time::Duration>,
+    body: &str,
+) -> AdapterError {
+    if let Some(err) = parse_error_envelope(body, status) {
+        return err;
+    }
+    classify_by_status(status, retry_after, body)
+}
+
+fn classify_by_status(
     status: u16,
     retry_after: Option<std::time::Duration>,
     body: &str,
@@ -283,6 +318,45 @@ pub fn classify_http_error(
             message: body.chars().take(300).collect(),
         },
     }
+}
+
+/// Lee `{"error": {"type": ..., "message": ...}}` y clasifica por ese tipo.
+///
+/// El sobre lo comparten OpenAI y OpenCode Zen (Zen lo usa incluso cuando el tipo
+/// no tiene nada que ver con autenticación, como `CreditsError` o `ModelError`).
+/// Si el cuerpo no tiene esa forma, se devuelve `None` para que el llamador caiga
+/// al status HTTP. `status` solo se usa para el caso desconocido, de forma que el
+/// error final lleve el código real y no uno inventado.
+fn parse_error_envelope(body: &str, status: u16) -> Option<AdapterError> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let error = value.get("error")?;
+    let kind = error.get("type").and_then(|v| v.as_str())?;
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or(kind)
+        .to_string();
+
+    Some(match kind {
+        // Zen: sin saldo en el workspace. No es un problema de la clave, y
+        // reautenticar no lo arregla: hay que añadir saldo, no reconectar.
+        "CreditsError" => AdapterError::Auth {
+            reason: format!("saldo insuficiente en el proveedor: {message}"),
+            reauth_required: false,
+        },
+        // Zen: el modelo pedido no existe o no está disponible para esta clave.
+        "ModelError" => AdapterError::Unsupported {
+            capability: "model".into(),
+            hint: Some(message),
+        },
+        "AuthError" => AdapterError::Auth { reason: message, reauth_required: true },
+        "RateLimitError" | "rate_limit_exceeded" => AdapterError::RateLimited { retry_after: None },
+        _ => AdapterError::Upstream {
+            status,
+            provider_code: Some(kind.to_string()),
+            message,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -371,7 +445,7 @@ mod tests {
     #[test]
     fn text_delta_is_translated() {
         let chunk = json!({"choices": [{"delta": {"content": "ho"}}]});
-        match &translate_chunk(&chunk)[0] {
+        match &translate_chunk(&chunk, &mut ToolCallIds::new())[0] {
             ChatEvent::TextDelta { text } => assert_eq!(text, "ho"),
             other => panic!("esperaba TextDelta, llegó {other:?}"),
         }
@@ -387,7 +461,7 @@ mod tests {
                 "prompt_tokens_details": {"cached_tokens": 4}
             }
         });
-        match &translate_chunk(&chunk)[0] {
+        match &translate_chunk(&chunk, &mut ToolCallIds::new())[0] {
             ChatEvent::Usage(u) => {
                 assert_eq!(u.source, UsageSource::Reported);
                 assert_eq!(u.total_tokens(), Some(20));
@@ -410,7 +484,7 @@ mod tests {
                 "completion_tokens_details": {"reasoning_tokens": 0}
             }
         });
-        match &translate_chunk(&chunk)[0] {
+        match &translate_chunk(&chunk, &mut ToolCallIds::new())[0] {
             ChatEvent::Usage(u) => {
                 assert_eq!(u.input_tokens, Some(21));
                 assert_eq!(u.output_tokens, Some(8));
@@ -425,31 +499,185 @@ mod tests {
     fn finish_reason_is_mapped() {
         let chunk = json!({"choices": [{"delta": {}, "finish_reason": "length"}]});
         assert!(matches!(
-            translate_chunk(&chunk)[0],
+            translate_chunk(&chunk, &mut ToolCallIds::new())[0],
             ChatEvent::Finished { reason: FinishReason::Length }
         ));
     }
 
     #[test]
-    fn tool_call_deltas_reuse_index_when_id_absent() {
+    fn tool_call_delta_without_any_prior_id_falls_back_to_a_synthetic_one() {
+        // Caso límite: llega un fragmento de argumentos sin que el id se haya visto
+        // nunca. No puede pasar en un stream real bien formado, pero no debe entrar
+        // en pánico.
         let chunk = json!({"choices": [{"delta": {"tool_calls": [
             {"index": 0, "function": {"arguments": "{\"a\""}}
         ]}}]});
-        match &translate_chunk(&chunk)[0] {
+        match &translate_chunk(&chunk, &mut ToolCallIds::new())[0] {
             ChatEvent::ToolCallDelta { id, .. } => assert_eq!(id, "call_0"),
             other => panic!("esperaba ToolCallDelta, llegó {other:?}"),
         }
     }
 
+    /// Reproduce el fallo real: id solo en el primer chunk, ausente en los
+    /// siguientes. Es el comportamiento estándar de OpenAI y lo que de verdad
+    /// envían los proveedores — capturado contra OpenCode Zen el 2026-07-31 con
+    /// un tool call real. Antes del arreglo, cada fragmento sin id recibía un
+    /// `call_{index}` inventado que nunca coincidía con el id real, así que los
+    /// argumentos nunca se juntaban con la llamada.
     #[test]
-    fn empty_chunk_yields_nothing() {
-        assert!(translate_chunk(&json!({"choices": [{"delta": {}}]})).is_empty());
+    fn tool_call_arguments_reassemble_across_chunks_that_omit_the_id() {
+        let mut ids = ToolCallIds::new();
+
+        let start = json!({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "tiempo_dy90japr030a", "type": "function",
+             "function": {"name": "tiempo", "arguments": ""}}
+        ]}}]});
+        let e0 = translate_chunk(&start, &mut ids);
+        assert!(matches!(&e0[0], ChatEvent::ToolCallStart { id, name }
+            if id == "tiempo_dy90japr030a" && name == "tiempo"));
+
+        // Los tres fragmentos siguientes, tal como los envió Zen: sin id.
+        let mut assembled = String::new();
+        for frag in ["{\"", "ciudad", "\":", " \"Madrid\"}"] {
+            let chunk = json!({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": frag}}
+            ]}}]});
+            match &translate_chunk(&chunk, &mut ids)[0] {
+                ChatEvent::ToolCallDelta { id, args_json } => {
+                    assert_eq!(
+                        id, "tiempo_dy90japr030a",
+                        "el fragmento sin id debe heredar el de la llamada, no un id inventado"
+                    );
+                    assembled.push_str(args_json);
+                }
+                other => panic!("esperaba ToolCallDelta, llegó {other:?}"),
+            }
+        }
+        assert_eq!(assembled, "{\"ciudad\": \"Madrid\"}");
     }
 
     #[test]
-    fn http_errors_are_classified() {
+    fn two_concurrent_tool_calls_do_not_mix_their_arguments() {
+        let mut ids = ToolCallIds::new();
+        for (index, id, name) in [(0u64, "call_a", "buscar"), (1u64, "call_b", "sumar")] {
+            let chunk = json!({"choices": [{"delta": {"tool_calls": [
+                {"index": index, "id": id, "type": "function",
+                 "function": {"name": name, "arguments": ""}}
+            ]}}]});
+            translate_chunk(&chunk, &mut ids);
+        }
+        let chunk = json!({"choices": [{"delta": {"tool_calls": [
+            {"index": 1, "function": {"arguments": "b-args"}},
+            {"index": 0, "function": {"arguments": "a-args"}}
+        ]}}]});
+        let events = translate_chunk(&chunk, &mut ids);
+        let by_id: std::collections::HashMap<_, _> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::ToolCallDelta { id, args_json } => Some((id.as_str(), args_json.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(by_id.get("call_b"), Some(&"b-args"));
+        assert_eq!(by_id.get("call_a"), Some(&"a-args"));
+    }
+
+    #[test]
+    fn reasoning_field_name_varies_by_backend_and_both_are_understood() {
+        // `reasoning_content`, verificado con DeepSeek vía Zen.
+        let a = json!({"choices": [{"delta": {"reasoning_content": "pienso"}}]});
+        assert!(matches!(
+            &translate_chunk(&a, &mut ToolCallIds::new())[0],
+            ChatEvent::ReasoningDelta { text } if text == "pienso"
+        ));
+        // `reasoning` a secas, verificado con north-mini-code-free vía Zen.
+        let b = json!({"choices": [{"delta": {"reasoning": "pienso"}}]});
+        assert!(matches!(
+            &translate_chunk(&b, &mut ToolCallIds::new())[0],
+            ChatEvent::ReasoningDelta { text } if text == "pienso"
+        ));
+    }
+
+    #[test]
+    fn a_trailing_cost_chunk_after_done_is_harmless() {
+        // Zen manda un chunk de telemetría después de [DONE], con `choices: []` y
+        // sin `usage`. No debe producir ningún evento ni entrar en pánico.
+        let chunk = json!({"choices": [], "x-opencode-type": "inference-cost", "cost": "0"});
+        assert!(translate_chunk(&chunk, &mut ToolCallIds::new()).is_empty());
+    }
+
+    #[test]
+    fn empty_chunk_yields_nothing() {
+        assert!(translate_chunk(&json!({"choices": [{"delta": {}}]}), &mut ToolCallIds::new()).is_empty());
+    }
+
+    #[test]
+    fn http_errors_without_a_recognisable_envelope_fall_back_to_status() {
         assert_eq!(classify_http_error(401, None, "").http_status(), 401);
         assert_eq!(classify_http_error(429, None, "").kind_str(), "rate_limited");
         assert_eq!(classify_http_error(503, None, "").kind_str(), "upstream");
+    }
+
+    /// Los tres cuerpos reales de OpenCode Zen capturados el 2026-07-31, los tres
+    /// con HTTP 401 aunque signifiquen cosas completamente distintas. Confiar en
+    /// el status habría mostrado «clave inválida» para un simple problema de saldo
+    /// — el caso que el usuario vio de verdad probando en Msty.
+    #[test]
+    fn zen_credits_error_is_distinguished_from_an_invalid_key() {
+        let body = r#"{"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KN81JJVZJ890QY3PCB3CPPS4/billing"}}"#;
+        let err = classify_http_error(401, None, body);
+        match &err {
+            AdapterError::Auth { reason, reauth_required } => {
+                assert!(reason.contains("saldo"), "debe explicar que es de saldo: {reason}");
+                assert!(
+                    !reauth_required,
+                    "reconectar la cuenta no arregla un problema de saldo"
+                );
+            }
+            other => panic!("esperaba Auth, llegó {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zen_model_error_is_unsupported_not_a_generic_502() {
+        let body = r#"{"type":"error","error":{"type":"ModelError","message":"Model no-existe-9999 is not supported"}}"#;
+        let err = classify_http_error(401, None, body);
+        assert_eq!(err.http_status(), 422);
+        match &err {
+            AdapterError::Unsupported { hint, .. } => {
+                assert!(hint.as_deref().unwrap_or("").contains("no-existe-9999"))
+            }
+            other => panic!("esperaba Unsupported, llegó {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zen_auth_error_still_asks_to_reconnect() {
+        let body = r#"{"type":"error","error":{"type":"AuthError","message":"Missing API key."}}"#;
+        match classify_http_error(401, None, body) {
+            AdapterError::Auth { reauth_required, .. } => assert!(reauth_required),
+            other => panic!("esperaba Auth, llegó {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_error_type_keeps_the_real_http_status() {
+        let body = r#"{"type":"error","error":{"type":"SomeNewErrorType","message":"boom"}}"#;
+        match classify_http_error(500, None, body) {
+            AdapterError::Upstream { status, provider_code, .. } => {
+                assert_eq!(status, 500, "no debe inventarse un status distinto del real");
+                assert_eq!(provider_code.as_deref(), Some("SomeNewErrorType"));
+            }
+            other => panic!("esperaba Upstream, llegó {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_plain_openai_style_body_without_the_zen_envelope_still_falls_back() {
+        // Forma de OpenAI: {"error": {"message": ..., "type": "invalid_request_error"}}
+        // sin ningún tipo de la lista reconocida de Zen — debe caer al status,
+        // no fallar al parsear.
+        let body = r#"{"error":{"message":"algo","type":"invalid_request_error"}}"#;
+        assert_eq!(classify_http_error(400, None, body).kind_str(), "upstream");
     }
 }

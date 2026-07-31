@@ -222,6 +222,27 @@ Lo único que hubo que hacer fue **extraer** la traducción de `chat/completions
 módulo compartido, porque LM Studio y la API de OpenAI hablan lo mismo. Eso es
 refactor por reutilización, no una grieta del contrato.
 
+### Una sola instancia de adaptador puede servir a muchos proveedores
+
+Con la especificación 0002 (proveedores OpenAI-compatible añadidos por el usuario,
+y OpenCode Zen como caso particular con la URL ya puesta) el contrato tuvo que
+responder a una pregunta que LM Studio no planteaba: ¿qué pasa cuando el
+`provider_id` lo elige el usuario en tiempo de ejecución, no el código?
+
+La respuesta fue **no** registrar un adaptador por proveedor. `self.adapters` sigue
+siendo el mapa fijo de los proveedores integrados; cuando el `provider_id` no está
+ahí y existe en la tabla de proveedores añadidos, el servicio cae a una única
+instancia compartida de `OpenAiCompatAdapter`, sin estado por proveedor. Toda su
+configuración —dirección y clave— viaja en `ResolvedCredential`, que por eso lleva
+también `provider_id`: el adaptador necesita saber para quién está actuando en cada
+llamada, algo que un adaptador fijo (LM Studio, OpenAI) no necesita porque ya lo
+sabe por su propio tipo.
+
+Esto también destapó, probando contra Zen de verdad, que el nombre público de un
+modelo tiene que llevar el proveedor delante en el propio código del adaptador, no
+solo en la documentación: sin `provider_id` en la credencial no había forma de
+construirlo correctamente para un adaptador que sirve a varios proveedores a la vez.
+
 ## Pruebas de contrato
 
 Toda implementación del trait pasa la misma batería, ejecutada primero contra el proveedor mock y luego contra cada adaptador real:

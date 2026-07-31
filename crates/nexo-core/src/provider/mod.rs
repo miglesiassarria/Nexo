@@ -6,6 +6,7 @@
 
 pub mod chatgpt_subscription;
 pub mod lmstudio;
+pub mod openai_compat;
 pub mod mock;
 pub mod openai_apikey;
 
@@ -79,6 +80,12 @@ impl AdapterId {
 #[derive(Clone)]
 pub struct ResolvedCredential {
     pub account_id: String,
+    /// A qué proveedor pertenece esta cuenta. Los adaptadores fijos (LM Studio,
+    /// OpenAI…) ya conocen su proveedor por su propio tipo y no lo necesitan; el
+    /// adaptador genérico sí, porque una sola instancia sirve a varios y con esto
+    /// sabe con qué nombre prefijar sus modelos (invariante «el proveedor va
+    /// siempre delante») y qué proveedor de `models.dev` consultar primero.
+    pub provider_id: String,
     pub kind: CredentialKind,
     /// API key o access token, según el tipo.
     pub secret: String,

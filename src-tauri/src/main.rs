@@ -44,6 +44,11 @@ fn main() {
             commands::lmstudio_status,
             commands::set_lmstudio_url,
             commands::lmstudio_models,
+            commands::provider_presets,
+            commands::list_custom_providers,
+            commands::add_custom_provider,
+            commands::update_custom_provider_url,
+            commands::remove_custom_provider,
             commands::list_apps,
             commands::create_app,
             commands::revoke_app,
@@ -114,6 +119,16 @@ fn main() {
                     ),
                     Err(e) => tracing::warn!(error = %e, "fallo detectando LM Studio"),
                 }
+            });
+
+            // `models.dev` se descarga (o se cachea) en segundo plano: si falla,
+            // los proveedores añadidos por el usuario siguen funcionando, solo
+            // que sus modelos aparecen como texto en lugar de con capacidades y
+            // precio reales.
+            let models_dev_nexo = nexo.clone();
+            tauri::async_runtime::spawn(async move {
+                let providers = models_dev_nexo.refresh_models_dev().await;
+                tracing::info!(providers, "models.dev cargado");
             });
 
             let catalog_nexo = nexo.clone();

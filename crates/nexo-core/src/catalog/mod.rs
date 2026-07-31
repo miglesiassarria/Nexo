@@ -9,6 +9,8 @@
 //! manifiesto solo entra cuando el proveedor no responde, y su lista se queda
 //! obsoleta en cuanto sale una familia nueva.
 
+pub mod models_dev;
+
 use crate::provider::{Accounting, Capabilities, Limits, ModelDescriptor, Pricing};
 
 pub const MANIFEST_VERSION: &str = "2026-07-30";

@@ -146,6 +146,7 @@ mod tests {
     fn cred() -> ResolvedCredential {
         ResolvedCredential {
             account_id: "mock".into(),
+            provider_id: "mock".into(),
             kind: CredentialKind::Mock,
             secret: String::new(),
             external_id: None,

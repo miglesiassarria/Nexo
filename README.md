@@ -35,7 +35,9 @@ Primera versión funcional. Lo que hay hoy:
 | Estadísticas locales y panel | ✅ |
 | Icono en la barra de estado, cierre sin parar el gateway | ✅ |
 | Modelos locales con LM Studio, detectado solo | ✅ **verificado** contra LM Studio 0.4.20 |
-| Google Gemini, Anthropic, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
+| Proveedores OpenAI-compatible añadidos por el usuario, y OpenCode Zen como atajo | ✅ **verificado** contra Zen real, 60 modelos |
+| Capacidades y precio de esos modelos cruzados con `models.dev` | ✅ |
+| Google Gemini, Anthropic-compatible, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
 
 ## Requisitos
 

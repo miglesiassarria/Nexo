@@ -5,7 +5,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: i64 = 1;
+pub const CURRENT_VERSION: i64 = 2;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -18,6 +18,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
         conn.execute_batch(V1)?;
         conn.pragma_update(None, "user_version", 1)?;
         tracing::info!("esquema migrado a la versión 1");
+    }
+
+    if version < 2 {
+        conn.execute_batch(V2)?;
+        conn.pragma_update(None, "user_version", 2)?;
+        tracing::info!("esquema migrado a la versión 2");
     }
 
     Ok(())
@@ -177,6 +183,27 @@ CREATE TABLE settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+"#;
+
+/// Proveedores que añade el usuario indicando nombre, dirección y clave.
+///
+/// Tienen tabla propia y no se deducen de `accounts` por dos razones: hay que poder
+/// distinguir un proveedor añadido a propósito de un `provider_id` desconocido por
+/// corrupción, y el nombre legible tiene que sobrevivir a desconectar la cuenta sin
+/// borrar el proveedor.
+///
+/// `id` es el slug derivado del nombre y es la clave primaria: eso hace que dos
+/// proveedores con el mismo nombre no puedan existir, sin comprobación aparte.
+const V2: &str = r#"
+CREATE TABLE custom_providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  -- Formato de cable que habla. Hoy solo 'openai_compat'; el de Anthropic queda
+  -- aplazado (ver spec 0002) y entrará como otro valor, sin migración.
+  compat     TEXT NOT NULL DEFAULT 'openai_compat',
+  created_at INTEGER NOT NULL
 );
 "#;
 

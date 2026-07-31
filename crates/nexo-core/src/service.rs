@@ -3,15 +3,16 @@
 use crate::apps::{App, IssuedApp};
 use crate::auth::{self, chatgpt};
 use crate::catalog;
+use crate::catalog::models_dev::{self, ModelsDevCatalog};
 use crate::config::Settings;
-use crate::db::{Account, Db, ResolvedModel};
+use crate::db::{Account, CustomProvider, Db, ResolvedModel};
 use crate::error::{CoreError, Result};
 use crate::gateway::wire::WireChatRequest;
 use crate::policy::PolicyEngine;
 use crate::provider::{
     chatgpt_subscription::ChatgptSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
-    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, Accounting, AdapterError, AdapterId,
-    ChatEvent,
+    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, openai_compat::OpenAiCompatAdapter,
+    Accounting, AdapterError, AdapterId, ChatEvent,
     ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
     ResolvedCredential, UsageReport, UsageSource,
 };
@@ -33,6 +34,14 @@ pub struct Nexo {
     secrets: Arc<dyn SecretStore>,
     http: reqwest::Client,
     adapters: HashMap<String, Arc<dyn ProviderAdapter>>,
+    /// Instancia única y compartida: sirve a todos los proveedores que el usuario
+    /// añada (nombre, URL, clave), y también a los preajustes como OpenCode Zen.
+    /// Sin estado por proveedor, así que no hace falta una por cada uno.
+    custom_adapter: Arc<OpenAiCompatAdapter>,
+    /// Capacidades y precios de terceros para el catálogo de los proveedores
+    /// añadidos. Vacío al arrancar; `refresh_models_dev` lo rellena en segundo
+    /// plano sin bloquear (T2 de la especificación 0002).
+    models_dev: Arc<tokio::sync::RwLock<ModelsDevCatalog>>,
     policy: PolicyEngine,
     paused: AtomicBool,
     /// Motivo por el que el gateway no está escuchando, si no lo está.
@@ -67,12 +76,16 @@ impl Nexo {
         }
 
         let policy = PolicyEngine::new(db.clone());
+        let models_dev = Arc::new(tokio::sync::RwLock::new(ModelsDevCatalog::default()));
+        let custom_adapter = Arc::new(OpenAiCompatAdapter::new(http.clone(), models_dev.clone()));
 
         let nexo = Arc::new(Self {
             db,
             secrets,
             http,
             adapters,
+            custom_adapter,
+            models_dev,
             policy,
             paused: AtomicBool::new(false),
             bind_error: std::sync::RwLock::new(None),
@@ -150,6 +163,135 @@ impl Nexo {
         Ok(())
     }
 
+    /// Resuelve el adaptador de un proveedor, con respaldo al genérico.
+    ///
+    /// Primero mira los proveedores integrados (mapa fijo, construido al
+    /// arrancar). Si no hay uno, y `provider_id` está en `custom_providers`, cae al
+    /// adaptador OpenAI-compatible compartido: es lo que permite que un proveedor
+    /// con nombre elegido por el usuario nunca esté en el mapa fijo y funcione
+    /// igual (D1 del diseño de la especificación 0002).
+    fn adapter_for(&self, provider_id: &str, kind: CredentialKind) -> Option<Arc<dyn ProviderAdapter>> {
+        let slug = AdapterId::new(provider_id, kind).slug();
+        if let Some(adapter) = self.adapters.get(&slug) {
+            return Some(adapter.clone());
+        }
+        if kind == CredentialKind::ApiKey {
+            if let Ok(Some(_)) = self.db.custom_provider(provider_id) {
+                return Some(self.custom_adapter.clone() as Arc<dyn ProviderAdapter>);
+            }
+        }
+        None
+    }
+
+    // -- Proveedores añadidos por el usuario ---------------------------------
+
+    /// Añade un proveedor OpenAI-compatible: nombre, dirección y clave. Crea a la
+    /// vez su cuenta (la clave va al Keychain) y refresca su catálogo.
+    pub async fn add_custom_provider(
+        &self,
+        name: &str,
+        base_url: &str,
+        api_key: &str,
+    ) -> Result<CustomProvider> {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            return Err(CoreError::Config("el proveedor necesita una API key".into()));
+        }
+
+        let provider = self.db.create_custom_provider(name, base_url)?;
+
+        // La clave se guarda bajo el id de la CUENTA, no el del proveedor: es el
+        // mismo convenio que usa `connect_openai_api_key`, y es lo que
+        // `disconnect_account` sabe borrar. Guardarla bajo otro id la habría
+        // dejado huérfana para siempre al desconectar (lo encontró esta prueba).
+        let account_id = util::new_id("acc");
+        self.secrets.set(&SecretRef::api_key(&account_id), api_key)?;
+        let account = Account {
+            id: account_id.clone(),
+            provider_id: provider.id.clone(),
+            credential_kind: CredentialKind::ApiKey,
+            label: provider.name.clone(),
+            keychain_ref: Some(SecretRef::api_key(&account_id).as_str().to_string()),
+            external_id: Some(provider.base_url.clone()),
+            scopes: None,
+            expires_at: None,
+            status: "active".into(),
+            risk_ack_at: None,
+            created_at: util::now_ms(),
+            last_used_at: None,
+        };
+        if let Err(e) = self.db.upsert_account(&account) {
+            // No dejar un proveedor sin cuenta ni secreto huérfano.
+            let _ = self.secrets.delete(&SecretRef::api_key(&account_id));
+            let _ = self.db.delete_custom_provider(&provider.id);
+            return Err(e);
+        }
+
+        for result in self.refresh_catalog_from_providers().await {
+            if result.provider_id == provider.id {
+                if let Some(error) = &result.error {
+                    tracing::warn!(provider = %provider.id, %error, "el catálogo no se pudo descubrir al añadir el proveedor");
+                }
+            }
+        }
+
+        Ok(provider)
+    }
+
+    /// Cambia la dirección de un proveedor añadido. Actualiza también la cuenta,
+    /// que es de donde la lee el adaptador en cada petición (sin reinicio).
+    pub async fn update_custom_provider_url(&self, id: &str, base_url: &str) -> Result<()> {
+        self.db.update_custom_provider_url(id, base_url)?;
+        // Se relee la dirección ya normalizada (sin barra final) en lugar de
+        // reutilizar el parámetro crudo: si no, la cuenta —que es de donde el
+        // adaptador la lee de verdad— se quedaba con la versión sin normalizar.
+        let normalized = self
+            .db
+            .custom_provider(id)?
+            .map(|p| p.base_url)
+            .unwrap_or_else(|| base_url.to_string());
+        if let Some(account) = self.db.account_for(id, CredentialKind::ApiKey)? {
+            self.db.set_account_tokens_meta(
+                &account.id,
+                account.expires_at.unwrap_or(0),
+                Some(&normalized),
+            )?;
+        }
+        for result in self.refresh_catalog_from_providers().await {
+            if result.provider_id == id {
+                if let Some(error) = &result.error {
+                    tracing::warn!(provider = id, %error, "el catálogo no se pudo refrescar tras cambiar la dirección");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn custom_providers(&self) -> Result<Vec<CustomProvider>> {
+        self.db.custom_providers()
+    }
+
+    /// Borra el proveedor, su cuenta y su clave del Keychain. No borra las filas
+    /// de catálogo ya descubiertas: quedan huérfanas y simplemente no se ofrecen a
+    /// ninguna aplicación, igual que al desconectar cualquier otra cuenta.
+    pub fn remove_custom_provider(&self, id: &str) -> Result<()> {
+        if let Some(account) = self.db.account_for(id, CredentialKind::ApiKey)? {
+            self.disconnect_account(&account.id)?;
+        }
+        self.db.delete_custom_provider(id)
+    }
+
+    /// Descarga (o cachea) `models.dev` y lo deja listo para que el adaptador
+    /// genérico enriquezca sus catálogos. Pensado para llamarse en segundo plano
+    /// al arrancar, sin bloquear: si falla, el catálogo sigue siendo solo texto.
+    pub async fn refresh_models_dev(&self) -> usize {
+        let cache_path = models_dev::default_cache_path(default_db_path().parent().unwrap_or(std::path::Path::new(".")));
+        let catalog = models_dev::load(&self.http, &cache_path).await;
+        let count = catalog.provider_count();
+        *self.models_dev.write().await = catalog;
+        count
+    }
+
     /// Pregunta a cada proveedor conectado qué modelos ofrece realmente y
     /// reemplaza su parte del catálogo.
     ///
@@ -177,8 +319,7 @@ impl Nexo {
             if account.status == "revoked" {
                 continue;
             }
-            let slug = AdapterId::new(account.provider_id.clone(), account.credential_kind).slug();
-            let Some(adapter) = self.adapters.get(&slug) else {
+            let Some(adapter) = self.adapter_for(&account.provider_id, account.credential_kind) else {
                 continue;
             };
 
@@ -490,6 +631,7 @@ impl Nexo {
         match account.credential_kind {
             CredentialKind::Mock | CredentialKind::Local => Ok(ResolvedCredential {
                 account_id: account.id.clone(),
+                provider_id: account.provider_id.clone(),
                 kind: account.credential_kind,
                 secret: String::new(),
                 // Para un proveedor local, `external_id` es la dirección de su
@@ -511,6 +653,7 @@ impl Nexo {
                     })?;
                 Ok(ResolvedCredential {
                     account_id: account.id.clone(),
+                    provider_id: account.provider_id.clone(),
                     kind: account.credential_kind,
                     secret,
                     external_id: account.external_id.clone(),
@@ -552,6 +695,7 @@ impl Nexo {
             {
                 return Ok(ResolvedCredential {
                     account_id: current.id.clone(),
+                    provider_id: current.provider_id.clone(),
                     kind: current.credential_kind,
                     secret,
                     external_id: current.external_id.clone(),
@@ -595,6 +739,7 @@ impl Nexo {
 
         Ok(ResolvedCredential {
             account_id: current.id.clone(),
+            provider_id: current.provider_id.clone(),
             kind: current.credential_kind,
             secret: tokens.access_token,
             external_id,
@@ -919,6 +1064,7 @@ impl Nexo {
                 None,
                 ResolvedCredential {
                     account_id: "mock".into(),
+                    provider_id: "mock".into(),
                     kind: CredentialKind::Mock,
                     secret: String::new(),
                     external_id: None,
@@ -950,8 +1096,7 @@ impl Nexo {
         prepared: &Prepared,
     ) -> std::result::Result<EventStream, AdapterError> {
         let adapter = self
-            .adapters
-            .get(&prepared.adapter_slug)
+            .adapter_for(&prepared.resolved.provider_id, prepared.resolved.credential_kind)
             .ok_or_else(|| AdapterError::Transport {
                 detail: format!("no hay adaptador para {}", prepared.adapter_slug),
             })?;
@@ -1706,5 +1851,125 @@ mod tests {
         assert!(c.is_closed());
         assert_eq!(c.error_kind(), Some("rate_limited"));
         assert_eq!(c.http_status(), Some(429));
+    }
+
+    // -- Proveedores añadidos por el usuario (spec 0002) --------------------
+
+    #[tokio::test]
+    async fn adding_a_custom_provider_creates_its_account_with_the_key_in_the_keychain() {
+        let n = nexo();
+        let p = n
+            .add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", "sk-test-123")
+            .await
+            .unwrap();
+        assert_eq!(p.id, "opencode-zen");
+
+        let account = n.db().account_for("opencode-zen", CredentialKind::ApiKey).unwrap();
+        let account = account.expect("debe crear la cuenta");
+        assert_eq!(account.external_id.as_deref(), Some("https://opencode.ai/zen/v1"));
+
+        // La clave se busca por el id de la CUENTA, como cualquier otra API key.
+        let secret = n.secrets().get(&SecretRef::api_key(&account.id)).unwrap();
+        assert_eq!(secret.as_deref(), Some("sk-test-123"));
+    }
+
+    #[tokio::test]
+    async fn adding_a_provider_without_a_key_is_refused() {
+        let n = nexo();
+        assert!(n
+            .add_custom_provider("Runpod", "https://runpod.example/v1", "  ")
+            .await
+            .is_err());
+        assert!(n.custom_providers().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_provider_name_does_not_leave_an_orphan_account_or_secret() {
+        let n = nexo();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        assert!(n
+            .add_custom_provider("Runpod", "https://b.example/v1", "sk-b")
+            .await
+            .is_err());
+        // Solo una cuenta, solo un proveedor: el segundo intento no dejó restos.
+        assert_eq!(n.custom_providers().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn two_custom_providers_coexist_with_separate_accounts() {
+        let n = nexo();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        n.add_custom_provider("Together", "https://b.example/v1", "sk-b").await.unwrap();
+
+        assert_eq!(n.custom_providers().unwrap().len(), 2);
+        let a = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap();
+        let b = n.db().account_for("together", CredentialKind::ApiKey).unwrap().unwrap();
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.external_id.as_deref(), Some("https://a.example/v1"));
+        assert_eq!(b.external_id.as_deref(), Some("https://b.example/v1"));
+    }
+
+    #[test]
+    fn adapter_for_falls_back_to_the_generic_adapter_for_a_custom_provider() {
+        let n = nexo();
+        n.db().create_custom_provider("Runpod", "https://a.example/v1").unwrap();
+        let adapter = n.adapter_for("runpod", CredentialKind::ApiKey);
+        assert!(adapter.is_some(), "un proveedor añadido debe resolver a un adaptador");
+    }
+
+    #[test]
+    fn adapter_for_returns_none_for_a_provider_id_that_does_not_exist_anywhere() {
+        let n = nexo();
+        assert!(n.adapter_for("fantasma", CredentialKind::ApiKey).is_none());
+    }
+
+    #[test]
+    fn adapter_for_still_resolves_built_in_providers_first() {
+        let n = nexo();
+        // "mock" es integrado: no debe ni mirar `custom_providers`.
+        assert!(n.adapter_for("mock", CredentialKind::Mock).is_some());
+    }
+
+    #[tokio::test]
+    async fn removing_a_custom_provider_deletes_its_account_and_secret() {
+        let n = nexo();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        let account_id = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap().id;
+
+        n.remove_custom_provider("runpod").unwrap();
+
+        assert!(n.custom_providers().unwrap().is_empty());
+        assert!(n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().is_none());
+        assert!(
+            n.secrets().get(&SecretRef::api_key(&account_id)).unwrap().is_none(),
+            "la clave debe borrarse del Keychain, no quedar huérfana"
+        );
+        // Y sin cuenta activa, ya no resuelve a ningún adaptador.
+        assert!(n.adapter_for("runpod", CredentialKind::ApiKey).is_none());
+    }
+
+    #[tokio::test]
+    async fn updating_the_url_reaches_the_account_the_adapter_actually_reads() {
+        let n = nexo();
+        n.add_custom_provider("Runpod", "https://old.example/v1", "sk-a").await.unwrap();
+        n.update_custom_provider_url("runpod", "https://new.example/v1/").await.unwrap();
+
+        let account = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap();
+        assert_eq!(
+            account.external_id.as_deref(),
+            Some("https://new.example/v1"),
+            "el adaptador lee la dirección de la cuenta, no de un caché de arranque"
+        );
+    }
+
+    #[tokio::test]
+    async fn models_dev_refresh_is_reflected_immediately_without_rebuilding_adapters() {
+        let n = nexo();
+        assert_eq!(n.models_dev.read().await.provider_count(), 0);
+        *n.models_dev.write().await = ModelsDevCatalog::parse(&serde_json::json!({
+            "opencode": {"models": {"x": {}}}
+        }));
+        // La misma instancia de adaptador ve el cambio: no hace falta reconstruirlo.
+        assert_eq!(n.models_dev.read().await.provider_count(), 1);
     }
 }

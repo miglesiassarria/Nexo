@@ -616,6 +616,7 @@ mod tests {
         let a = LmStudioAdapter::new(reqwest::Client::new(), "http://127.0.0.1:1234");
         let cred = |url: Option<&str>| ResolvedCredential {
             account_id: "acc".into(),
+            provider_id: "lmstudio".into(),
             kind: CredentialKind::Local,
             secret: String::new(),
             external_id: url.map(str::to_string),

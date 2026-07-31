@@ -91,6 +91,15 @@ son dos servidores con endpoints y metadatos propios.
 Un modelo que solo hace embeddings se lista marcado como tal y rechaza el chat con
 un error explícito, en aplicación de la regla de no degradar en silencio.
 
+**Proveedores OpenAI-compatible añadidos por el usuario.** El usuario puede añadir
+cualquier servicio que hable ese formato —nombre, dirección y clave—, y puede tener
+varios a la vez, cada uno con su propio catálogo. **OpenCode Zen**, un gateway real
+con clave propia y 60 modelos de varios fabricantes, aparece como atajo con la URL
+ya rellena: internamente es este mismo tipo de proveedor, no un adaptador aparte.
+Las capacidades y el precio de estos modelos se cruzan con `models.dev`, una base de
+datos pública; lo que no aparezca ahí se ofrece solo como texto, nunca prometiendo
+una capacidad sin dato que la respalde.
+
 ## Características
 
 ### Gateway unificado
