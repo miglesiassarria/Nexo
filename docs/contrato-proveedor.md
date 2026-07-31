@@ -13,7 +13,7 @@ pub enum CredentialKind {
     /// API pública y documentada del proveedor. Facturación por token.
     ApiKey,
     /// Flujo OAuth del cliente oficial del proveedor. No soportado.
-    /// Sin coste marginal, catálogo recortado, sin métricas de uso.
+    /// Sin coste marginal, catálogo recortado, cuota del plan no expuesta.
     SubscriptionOauth,
     /// Runtime en la máquina del usuario. Sin credencial ni coste.
     Local,
@@ -114,7 +114,9 @@ pub enum Accounting {
 }
 ```
 
-`Capabilities` no es descubrible mediante las APIs de los proveedores. Se obtiene combinando, por este orden de precedencia: anulaciones locales del usuario, el manifiesto versionado que se distribuye con Nexo, y lo que el proveedor anuncie en su endpoint de modelos.
+De dónde salen las `Capabilities` depende del proveedor, y no se puede asumir lo mismo para todos. La vía de suscripción de ChatGPT publica su catálogo con contexto, modalidades y niveles de razonamiento por modelo; la API pública solo dice qué modelos existen. Precedencia: lo que publique el proveedor > el manifiesto versionado que se distribuye con Nexo.
+
+Un adaptador nuevo debe implementar `catalog()` preguntando al proveedor cuando sea posible, y recurrir al manifiesto solo como respaldo. Un catálogo clavado a mano deja de reflejar la realidad en cuanto sale una familia de modelos nueva.
 
 El nombre público lleva **siempre** el proveedor delante. Los alias y perfiles se configuran encima, no se resuelven por adivinación sobre nombres ambiguos.
 
@@ -135,7 +137,7 @@ pub enum ChatEvent {
 }
 ```
 
-`Started` marca el punto de medición del tiempo hasta el primer token. `Usage` puede no llegar nunca: en las rutas de suscripción no llega.
+`Started` marca el punto de medición del tiempo hasta el primer token. `Usage` puede no llegar: cuando no llega se registra como no disponible, nunca como cero. La vía de suscripción de ChatGPT sí lo envía, con tokens de entrada, salida, razonamiento y caché; lo que no expone es la cuota consumida del plan.
 
 ## Uso reportado
 
