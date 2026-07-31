@@ -23,8 +23,17 @@ no en tres fases construidas encima.
   └─────── la realidad corrige ─────┘
 ```
 
-Cada fase vive en `specs/NNNN-nombre-corto/` y produce un fichero. Ninguna fase
-empieza sin que la anterior esté aceptada por el usuario.
+Cada fase vive en `specs/NNNN-nombre-corto/` y produce un fichero.
+
+**La puerta que importa es `/spec`.** Ahí se decide qué se construye y para qué, y
+ahí es donde la opinión del usuario es decisiva: no se pasa a diseñar sin su visto
+bueno. `/design` y `/tasks` se le muestran, pero no le piden aprobación: son
+consecuencia técnica de algo que ya aceptó, y pedir permiso tres veces seguidas es
+fricción, no rigor.
+
+Solo se vuelve a preguntar si el diseño **cambia lo acordado**: si revela que la
+especificación era irrealizable, que resuelve el problema equivocado o que hay que
+recortar el alcance. Entonces sí, porque eso ya no es cómo, es qué.
 
 | Fase | Fichero | Pregunta que responde |
 | --- | --- | --- |

@@ -82,6 +82,49 @@ Para generar solo uno: `npm run tauri build -- --bundles app` (o `dmg`, `nsis`, 
 
 Nada de esto se versiona: `target/`, `node_modules/`, `dist/` y los instaladores están en [.gitignore](.gitignore).
 
+## Cómo se desarrolla aquí
+
+Nexo usa **desarrollo dirigido por especificación**: nada sustancial se implementa
+sin una especificación escrita y acordada antes. No es burocracia — es el sitio
+donde se descubre que el problema no era el que parecía, antes de gastar código en
+el equivocado.
+
+El ciclo está automatizado como órdenes de Claude Code. Tú pides lo que quieres en
+tus palabras; si falta información, se te hacen **como máximo 3 preguntas cortas
+con la opción recomendada marcada**, y con eso se escribe la especificación.
+
+```
+/spec quiero conectar los modelos que tengo en LM Studio
+   ↓   (preguntas cortas si hacen falta)  →  specs/0001-…/spec.md
+/design                                   →  specs/0001-…/design.md
+/tasks                                    →  specs/0001-…/tasks.md
+/build                                    →  código, con las tareas tachándose
+```
+
+| Orden | Qué hace |
+| --- | --- |
+| `/spec <lo que quieres>` | Pregunta lo que falte y escribe el qué y el por qué |
+| `/design` | Convierte el qué en el cómo, con las alternativas descartadas |
+| `/tasks` | Descompone en tareas verificables, sin dejar el repo roto entre ellas |
+| `/build` | Implementa, ejecutando la verificación de cada tarea |
+| `/spec-status` | En qué punto está cada especificación, y qué incoherencias hay |
+
+Dos reglas que hacen que esto sirva de algo:
+
+- **Los criterios de aceptación son ejecutables.** «Debe ser rápido» no es un
+  criterio. «`GET /v1/models` responde en menos de 200 ms, medido con `cargo test
+  …`» sí. `/build` no marca una tarea hasta que su verificación pasa de verdad.
+- **Lo que se descubre vuelve al documento.** Si al implementar resulta que la
+  especificación estaba equivocada, se corrige y se anota qué se aprendió. Ya ha
+  pasado tres veces en este proyecto.
+
+Las especificaciones viven en [`specs/`](specs/), la metodología completa en
+[`.claude/skills/spec-driven/SKILL.md`](.claude/skills/spec-driven/SKILL.md), y las
+invariantes que ninguna especificación puede romper en [`CLAUDE.md`](CLAUDE.md).
+
+Para lo trivial y reversible (una errata, un texto, un formateo) no hace falta el
+ciclo. Un arreglo de fallo tampoco, pero sí una prueba que lo reproduzca antes.
+
 ## Desarrollo
 
 ```bash
@@ -131,6 +174,9 @@ src-tauri/            Capa de escritorio: bandeja, ciclo de vida, comandos
 src/                  Interfaz Svelte 5
 assets/icons/         Sistema de iconos (ver su propio README)
 docs/                 Producto, decisiones y contratos
+specs/                Especificaciones de cada cambio
+.claude/              Metodología automatizada: órdenes y skill
+scripts/              Utilidades del repositorio
 ```
 
 Todo lo que el gateway necesita para funcionar vive en Rust. La interfaz solo presenta y envía acciones: por eso Nexo sigue operativo sin ventana abierta.
@@ -145,6 +191,8 @@ Todo lo que el gateway necesita para funcionar vive en Rust. La interfaz solo pr
 | [docs/adr/0002-stack-tauri-rust-svelte.md](docs/adr/0002-stack-tauri-rust-svelte.md) | Stack, objetivos numéricos y mediciones |
 | [docs/contrato-proveedor.md](docs/contrato-proveedor.md) | Cómo se añade un proveedor |
 | [docs/modelo-datos.md](docs/modelo-datos.md) | Esquema SQLite |
+| [CLAUDE.md](CLAUDE.md) | Metodología, verificación e invariantes que no se negocian |
+| [specs/](specs/) | Especificaciones de cada cambio, con su diseño y sus tareas |
 
 ## Privacidad
 
