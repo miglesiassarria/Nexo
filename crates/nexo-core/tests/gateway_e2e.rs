@@ -233,6 +233,104 @@ async fn streaming_response_is_sse_and_reassembles_to_the_same_text() {
     assert_eq!(usage["usage"]["nexo"]["cost_basis"], "reported");
 }
 
+/// Reproduce lo que se vio con Zen real: el uso llega en un fragmento
+/// posterior a `Finished`, igual que hace la propia API de OpenAI con
+/// `include_usage`. Cubre los dos fallos encontrados en ese caso: registrar la
+/// misma petición una vez por cada evento posterior al cierre, y registrarla
+/// sin tokens por hacerlo antes de que llegara el uso.
+#[tokio::test]
+async fn usage_that_arrives_after_finished_is_recorded_once_and_with_its_tokens() {
+    let h = start().await;
+    // El modelo con el evento de más solo se añade a este catálogo de
+    // prueba: no forma parte del manifiesto real que ven los usuarios.
+    h.nexo
+        .db()
+        .replace_models(
+            "mock",
+            CredentialKind::Mock,
+            &[
+                nexo_core::provider::mock::MockAdapter::descriptor(),
+                nexo_core::provider::mock::MockAdapter::trailing_event_descriptor(),
+            ],
+            nexo_core::catalog::MANIFEST_VERSION,
+        )
+        .expect("catálogo de prueba");
+
+    let mut body = h.simple_body(true);
+    body["model"] = json!("mock/mock-trailing-event");
+
+    let resp = h.post_chat(body).await;
+    assert!(resp.status().is_success());
+    let raw = resp.text().await.unwrap();
+
+    let recent = h.nexo.db().recent_requests(10).unwrap();
+    assert_eq!(
+        recent.len(),
+        1,
+        "una sola petición debe dejar una sola fila, no una por cada evento tras el cierre"
+    );
+    assert!(
+        recent[0].total_tokens.unwrap_or(0) > 0,
+        "el uso llegó después de `Finished`: debe registrarse igual, no como no disponible"
+    );
+    assert_eq!(recent[0].usage_source, "estimated");
+
+    // Y el cliente sigue viendo un único cierre bien formado.
+    let chunks = parse_sse(&raw);
+    assert_eq!(
+        chunks.iter().filter(|c| !c["usage"].is_null()).count(),
+        1,
+        "un solo chunk de uso"
+    );
+    assert_eq!(raw.matches("data: [DONE]").count(), 1, "un solo centinela final");
+}
+
+/// El tiempo hasta el primer token se mide desde que arrancó la petición, no
+/// desde el evento `Started`. En `chat/completions` ese evento y el primer
+/// trozo de texto salen del mismo fragmento SSE, así que medir entre ellos
+/// daba siempre 0 ms: en el panel, ocho segundos de espera aparecían como
+/// «0 ms al primer token» para Zen, OpenAI por API key y LM Studio.
+#[tokio::test]
+async fn time_to_first_token_is_measured_from_the_start_of_the_request() {
+    let h = start().await;
+    h.nexo
+        .db()
+        .replace_models(
+            "mock",
+            CredentialKind::Mock,
+            &[
+                nexo_core::provider::mock::MockAdapter::descriptor(),
+                nexo_core::provider::mock::MockAdapter::slow_start_descriptor(),
+            ],
+            nexo_core::catalog::MANIFEST_VERSION,
+        )
+        .expect("catálogo de prueba");
+
+    let mut body = h.simple_body(true);
+    body["model"] = json!("mock/mock-slow-start");
+    h.post_chat(body).await.text().await.unwrap();
+
+    let row = h
+        .nexo
+        .db()
+        .recent_requests(5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .expect("la petición queda registrada");
+
+    let ttft = row.ttft_ms.expect("debe medirse el tiempo al primer token");
+    let espera = nexo_core::provider::mock::SLOW_START_DELAY.as_millis() as i64;
+    assert!(
+        ttft >= espera / 2,
+        "el proveedor tardó {espera} ms en arrancar y se registraron {ttft} ms"
+    );
+    assert!(
+        ttft <= row.latency_ms.unwrap(),
+        "el primer token no puede llegar después del final de la petición"
+    );
+}
+
 #[tokio::test]
 async fn unknown_model_is_rejected_with_a_pointer_to_the_catalog() {
     let h = start().await;
@@ -923,6 +1021,27 @@ async fn zen_chat_with_a_free_model_works_end_to_end() {
         .expect("la petición queda registrada");
     assert_eq!(row.status, "ok");
     assert_eq!(row.credential_kind, "api_key");
+
+    // Nexo no añade contexto por su cuenta: un prompt corto tiene que contar
+    // como corto. Un recuento inflado significaría que el gateway está
+    // inyectando algo, y no sería del cliente. Comprobado contra el mismo
+    // prompt enviado directo a Zen: 23 tokens de entrada.
+    let input = body["usage"]["prompt_tokens"].as_u64().unwrap();
+    assert!(
+        input < 100,
+        "un prompt de una línea no puede contar {input} tokens de entrada"
+    );
+
+    // El total es entrada + salida. Los tokens de razonamiento van dentro de
+    // la salida, así que sumarlos otra vez inflaría la cifra.
+    let output = body["usage"]["completion_tokens"].as_u64().unwrap();
+    let total = body["usage"]["total_tokens"].as_u64().unwrap();
+    assert_eq!(
+        total,
+        input + output,
+        "el total no puede sumar dos veces el razonamiento ni la caché"
+    );
+    assert_eq!(row.total_tokens.unwrap() as u64, total, "se registra lo mismo que se devuelve");
 }
 
 #[tokio::test]
@@ -960,6 +1079,30 @@ async fn zen_streaming_with_a_free_model_reassembles_correctly() {
         .filter(|c| !c["choices"][0]["finish_reason"].is_null())
         .count();
     assert_eq!(finishes, 1);
+
+    // Zen manda el uso en un fragmento posterior al de `finish_reason`. Contra
+    // el proveedor real: una sola fila en estadísticas, y con sus tokens.
+    let rows: Vec<_> = h
+        .nexo
+        .db()
+        .recent_requests(20)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.operation == "chat")
+        .collect();
+    assert_eq!(rows.len(), 1, "una petición, una fila");
+    assert!(
+        rows[0].total_tokens.unwrap_or(0) > 0,
+        "los tokens llegan después del cierre y deben quedar registrados"
+    );
+    assert_eq!(rows[0].usage_source, "reported");
+
+    // Zen habla `chat/completions`: `Started` y el primer texto llegan en el
+    // mismo fragmento. El tiempo al primer token debe salir del arranque de la
+    // petición, no de ahí, o se registra un 0 ms que no es verdad.
+    let ttft = rows[0].ttft_ms.expect("tiempo al primer token");
+    assert!(ttft > 0, "un proveedor remoto no contesta en 0 ms");
+    assert!(ttft <= rows[0].latency_ms.unwrap());
 }
 
 #[tokio::test]

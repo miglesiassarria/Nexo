@@ -137,7 +137,9 @@ pub enum ChatEvent {
 }
 ```
 
-`Started` marca el punto de medición del tiempo hasta el primer token. `Usage` puede no llegar: cuando no llega se registra como no disponible, nunca como cero. La vía de suscripción de ChatGPT sí lo envía, con tokens de entrada, salida, razonamiento y caché; lo que no expone es la cuota consumida del plan.
+`Started` sirve para capturar el identificador de petición del proveedor. **No** marca el punto de medición del tiempo hasta el primer token: eso se mide desde que arrancó la petición, porque en `chat/completions` este evento y el primer trozo de texto salen del mismo fragmento SSE y la diferencia entre ambos es siempre ~0. Medirlo ahí registró ocho segundos de espera real como «0 ms» en Zen, en OpenAI por API key y en LM Studio, mientras la vía de suscripción daba una cifra creíble por casualidad: su formato sí emite un evento antes del contenido. `Usage` puede no llegar: cuando no llega se registra como no disponible, nunca como cero. La vía de suscripción de ChatGPT sí lo envía, con tokens de entrada, salida, razonamiento y caché; lo que no expone es la cuota consumida del plan.
+
+**`Finished` no es el último evento.** Marca el fin del contenido, no el del stream: `Usage` puede llegar después, y así lo hacen OpenCode Zen y la propia API de OpenAI con `include_usage`. Un adaptador puede emitirlos en ese orden sin hacer nada mal, y el gateway solo cierra la respuesta y registra las estadísticas cuando el stream se agota de verdad. Suponer lo contrario costó dos fallos: la petición se registraba una vez por cada evento posterior a `Finished` —hasta tres filas para una sola conversación en el panel— y sin los tokens, que aún no habían llegado. Cubierto por `usage_that_arrives_after_finished_is_recorded_once_and_with_its_tokens`, y verificado contra Zen real en `zen_streaming_with_a_free_model_reassembles_correctly`.
 
 ## Uso reportado
 
@@ -249,6 +251,8 @@ Toda implementación del trait pasa la misma batería, ejecutada primero contra 
 
 - Respuesta no streaming: campos completos, `Usage` con el `source` correcto.
 - Streaming: orden de eventos, `Started` antes de cualquier delta, `Finished` una sola vez.
+- `Usage` posterior a `Finished`: se registra igual, con sus tokens, y una sola vez.
+- Tiempo hasta el primer token: mayor que cero contra un proveedor remoto, y nunca mayor que la latencia total.
 - Cancelación a mitad de stream: cierra la conexión de salida y emite `Cancelled`.
 - Capacidad no soportada: devuelve `Unsupported`, no una respuesta degradada.
 - Credencial caducada: devuelve `Auth` con `reauth_required` correcto.

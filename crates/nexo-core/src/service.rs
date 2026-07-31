@@ -1184,7 +1184,7 @@ impl Nexo {
 
     /// Registra un fallo que impidió abrir el stream.
     pub fn finish_failed(&self, prepared: &Prepared, err: &AdapterError) {
-        let mut collector = Collector::new();
+        let mut collector = Collector::since(prepared.started);
         collector.observe_error(err);
         self.finish(prepared, &collector);
     }
@@ -1298,14 +1298,26 @@ pub struct Collector {
 
 impl Collector {
     pub fn new() -> Self {
-        Self { started: Some(Instant::now()), ..Default::default() }
+        Self::since(Instant::now())
+    }
+
+    /// Mide el tiempo hasta el primer token desde `started`, que es cuando
+    /// arrancó la petición.
+    ///
+    /// No se mide desde el evento `Started`: en `chat/completions` ese evento
+    /// y el primer trozo de texto salen del mismo fragmento SSE, así que la
+    /// diferencia entre ambos es siempre ~0. Anclarlo ahí hacía que ocho
+    /// segundos de espera se registraran como «0 ms al primer token» para Zen,
+    /// OpenAI por API key y LM Studio, mientras la vía de suscripción sí daba
+    /// una cifra creíble porque su formato emite un evento antes del contenido.
+    pub fn since(started: Instant) -> Self {
+        Self { started: Some(started), ..Default::default() }
     }
 
     pub fn observe(&mut self, event: &ChatEvent) {
         match event {
             ChatEvent::Started { provider_request_id } => {
                 self.provider_request_id = provider_request_id.clone();
-                self.started = Some(Instant::now());
             }
             ChatEvent::TextDelta { .. } | ChatEvent::ReasoningDelta { .. } => {
                 if self.ttft_ms.is_none() {

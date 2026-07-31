@@ -14,6 +14,18 @@ use std::time::Duration;
 
 pub const PROVIDER: &str = "mock";
 pub const MODEL: &str = "mock-echo";
+/// Modelo que reproduce a propósito lo que hace Zen: un fragmento de coste
+/// que llega después de `Finished`. Existe para probar que el gateway no
+/// registra la misma petición dos veces cuando eso pasa.
+pub const TRAILING_EVENT_MODEL: &str = "mock-trailing-event";
+/// Modelo que tarda en arrancar y luego emite `Started` y el primer trozo de
+/// texto sin hueco entre ellos, como hace cualquier proveedor que hable
+/// `chat/completions`: ahí los dos salen del mismo fragmento SSE. Existe para
+/// probar que el tiempo hasta el primer token se mide desde que empezó la
+/// petición, no desde `Started`.
+pub const SLOW_START_MODEL: &str = "mock-slow-start";
+/// Lo que tarda [`SLOW_START_MODEL`] en emitir su primer evento.
+pub const SLOW_START_DELAY: Duration = Duration::from_millis(150);
 
 pub struct MockAdapter {
     delay: Duration,
@@ -31,9 +43,21 @@ impl MockAdapter {
     }
 
     pub fn descriptor() -> ModelDescriptor {
+        Self::descriptor_for(MODEL)
+    }
+
+    pub fn trailing_event_descriptor() -> ModelDescriptor {
+        Self::descriptor_for(TRAILING_EVENT_MODEL)
+    }
+
+    pub fn slow_start_descriptor() -> ModelDescriptor {
+        Self::descriptor_for(SLOW_START_MODEL)
+    }
+
+    fn descriptor_for(api_id: &str) -> ModelDescriptor {
         ModelDescriptor {
-            api_id: MODEL.to_string(),
-            public_name: format!("{PROVIDER}/{MODEL}"),
+            api_id: api_id.to_string(),
+            public_name: format!("{PROVIDER}/{api_id}"),
             caps: Capabilities {
                 text: true,
                 tools: false,
@@ -62,7 +86,11 @@ impl ProviderAdapter for MockAdapter {
         &self,
         _cred: &ResolvedCredential,
     ) -> Result<Vec<ModelDescriptor>, AdapterError> {
-        Ok(vec![Self::descriptor()])
+        Ok(vec![
+            Self::descriptor(),
+            Self::trailing_event_descriptor(),
+            Self::slow_start_descriptor(),
+        ])
     }
 
     async fn stream(
@@ -70,7 +98,9 @@ impl ProviderAdapter for MockAdapter {
         req: &ChatRequest,
         _cred: &ResolvedCredential,
     ) -> Result<EventStream, AdapterError> {
-        check_capabilities(req, &Self::descriptor())?;
+        let trailing_event = req.api_model == TRAILING_EVENT_MODEL;
+        let slow_start = req.api_model == SLOW_START_MODEL;
+        check_capabilities(req, &Self::descriptor_for(&req.api_model))?;
 
         let prompt = req
             .messages
@@ -91,6 +121,11 @@ impl ProviderAdapter for MockAdapter {
             (0usize, words, false),
             move |(index, words, usage_sent)| async move {
                 if index == 0 {
+                    // El proveedor tarda en contestar: nada sale hasta que
+                    // decide empezar. `Started` no llega antes.
+                    if slow_start {
+                        tokio::time::sleep(SLOW_START_DELAY).await;
+                    }
                     return Some((
                         Ok(ChatEvent::Started { provider_request_id: None }),
                         (1, words, usage_sent),
@@ -98,7 +133,10 @@ impl ProviderAdapter for MockAdapter {
                 }
                 let word_index = index - 1;
                 if word_index < words.len() {
-                    if !delay.is_zero() {
+                    // Sin hueco entre `Started` y el primer texto: en
+                    // `chat/completions` los dos salen del mismo fragmento.
+                    let first_of_slow_start = slow_start && word_index == 0;
+                    if !delay.is_zero() && !first_of_slow_start {
                         tokio::time::sleep(delay).await;
                     }
                     let text = words[word_index].clone();
@@ -107,7 +145,9 @@ impl ProviderAdapter for MockAdapter {
                         (index + 1, words, usage_sent),
                     ));
                 }
-                if !usage_sent {
+                // El modelo que imita a Zen no informa aquí: su uso llega
+                // después de `Finished`, y es justo lo que se quiere probar.
+                if !usage_sent && !trailing_event {
                     return Some((
                         Ok(ChatEvent::Usage(UsageReport {
                             input_tokens: Some(input_tokens),
@@ -128,6 +168,26 @@ impl ProviderAdapter for MockAdapter {
                 Ok(ChatEvent::Finished { reason: crate::provider::FinishReason::Stop })
             }),
         );
+
+        // Zen real —y la propia API de OpenAI con `include_usage`— manda el
+        // uso en un fragmento posterior a `Finished`. Este modelo lo
+        // reproduce a propósito para probar contra ese caso.
+        let trailing = futures::StreamExt::filter_map(
+            futures::stream::once(async move {
+                if trailing_event {
+                    Some(Ok(ChatEvent::Usage(UsageReport {
+                        input_tokens: Some(input_tokens),
+                        output_tokens: Some(output_tokens),
+                        source: UsageSource::Estimated,
+                        ..Default::default()
+                    })))
+                } else {
+                    None
+                }
+            }),
+            futures::future::ready,
+        );
+        let stream = futures::StreamExt::chain(stream, trailing);
 
         Ok(Box::pin(stream))
     }

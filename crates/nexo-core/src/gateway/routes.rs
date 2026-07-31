@@ -184,8 +184,6 @@ fn stream_response(
     stream: EventStream,
 ) -> Response {
     let accounting = prepared.accounting;
-    let mut builder = builder;
-    let mut collector = Collector::new();
 
     // El primer chunk anuncia el rol, como hacen los clientes de OpenAI. Se
     // materializa antes de mover el builder para que todos los chunks de la
@@ -193,53 +191,74 @@ fn stream_response(
     let role = builder.role_chunk();
     let head = futures::stream::once(async move { sse(role) });
 
-    let body = stream.flat_map(move |item| {
-        let mut out: Vec<Result<Event, Infallible>> = Vec::new();
+    // El cierre —chunk de uso, `[DONE]` y registro en estadísticas— se hace
+    // cuando el stream del proveedor se agota, no al ver `Finished`. El uso
+    // puede llegar *después* de ese evento: así lo manda OpenCode Zen y así lo
+    // manda la propia API de OpenAI con `include_usage`. Cerrar en `Finished`
+    // costó dos fallos reales: la petición se registraba una vez por cada
+    // evento posterior, y sin los tokens que aún no habían llegado.
+    let state = std::sync::Arc::new(std::sync::Mutex::new((
+        builder,
+        Collector::since(prepared.started),
+    )));
 
-        match item {
-            Ok(event) => {
-                collector.observe(&event);
-                match &event {
-                    ChatEvent::TextDelta { text } => {
-                        out.push(sse(builder.text_chunk(text)))
+    let body = stream.flat_map({
+        let state = state.clone();
+        move |item| {
+            let mut guard = state.lock().expect("estado del stream");
+            let (builder, collector) = &mut *guard;
+            let mut out: Vec<Result<Event, Infallible>> = Vec::new();
+
+            match item {
+                Ok(event) => {
+                    collector.observe(&event);
+                    match &event {
+                        ChatEvent::TextDelta { text } => {
+                            out.push(sse(builder.text_chunk(text)))
+                        }
+                        ChatEvent::ReasoningDelta { text } => {
+                            out.push(sse(builder.reasoning_chunk(text)))
+                        }
+                        ChatEvent::ToolCallStart { id, name } => {
+                            out.push(sse(builder.tool_start_chunk(id, name)))
+                        }
+                        ChatEvent::ToolCallDelta { id, args_json } => {
+                            out.push(sse(builder.tool_args_chunk(id, args_json)))
+                        }
+                        ChatEvent::Finished { reason } => {
+                            out.push(sse(builder.finish_chunk(*reason)))
+                        }
+                        ChatEvent::Started { .. }
+                        | ChatEvent::ToolCallEnd { .. }
+                        | ChatEvent::Usage(_) => {}
                     }
-                    ChatEvent::ReasoningDelta { text } => {
-                        out.push(sse(builder.reasoning_chunk(text)))
-                    }
-                    ChatEvent::ToolCallStart { id, name } => {
-                        out.push(sse(builder.tool_start_chunk(id, name)))
-                    }
-                    ChatEvent::ToolCallDelta { id, args_json } => {
-                        out.push(sse(builder.tool_args_chunk(id, args_json)))
-                    }
-                    ChatEvent::Finished { reason } => {
-                        out.push(sse(builder.finish_chunk(*reason)))
-                    }
-                    ChatEvent::Started { .. }
-                    | ChatEvent::ToolCallEnd { .. }
-                    | ChatEvent::Usage(_) => {}
+                }
+                Err(err) => {
+                    // Un fallo a mitad de stream no puede cambiar el código
+                    // HTTP, que ya se envió: se emite como evento y se cierra.
+                    collector.observe_error(&err);
+                    out.push(sse(error_body(&err)));
                 }
             }
-            Err(err) => {
-                // Un fallo a mitad de stream no puede cambiar el código HTTP,
-                // que ya se envió: se emite como evento y se cierra.
-                collector.observe_error(&err);
-                out.push(sse(error_body(&err)));
-            }
-        }
 
-        if collector.is_closed() {
-            let usage = collector.usage();
-            let basis = accounting.cost_basis_for(usage.source);
-            out.push(sse(builder.usage_chunk(&usage, basis.as_str())));
-            out.push(Ok(Event::default().data("[DONE]")));
-            nexo.finish(&prepared, &collector);
+            futures::stream::iter(out)
         }
-
-        futures::stream::iter(out)
     });
 
-    Sse::new(head.chain(body))
+    let tail = futures::stream::once(async move {
+        let guard = state.lock().expect("estado del stream");
+        let (builder, collector) = &*guard;
+        let usage = collector.usage();
+        let basis = accounting.cost_basis_for(usage.source);
+        nexo.finish(&prepared, collector);
+        vec![
+            sse(builder.usage_chunk(&usage, basis.as_str())),
+            Ok(Event::default().data("[DONE]")),
+        ]
+    })
+    .flat_map(futures::stream::iter);
+
+    Sse::new(head.chain(body).chain(tail))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()
 }
@@ -251,7 +270,7 @@ async fn collect_response(
     stream: EventStream,
 ) -> Response {
     let mut stream = stream;
-    let mut collector = Collector::new();
+    let mut collector = Collector::since(prepared.started);
     let mut text = String::new();
     let mut calls: Vec<ToolCall> = Vec::new();
     let mut failure: Option<AdapterError> = None;
