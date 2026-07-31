@@ -11,7 +11,8 @@ use crate::gateway::wire::WireChatRequest;
 use crate::policy::PolicyEngine;
 use crate::provider::{
     chatgpt_subscription::ChatgptSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
-    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, openai_compat::OpenAiCompatAdapter,
+    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, openai_compat,
+    openai_compat::OpenAiCompatAdapter,
     Accounting, AdapterError, AdapterId, ChatEvent,
     ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
     ResolvedCredential, UsageReport, UsageSource,
@@ -919,6 +920,153 @@ impl Nexo {
         Ok(seen)
     }
 
+    /// Lo que el usuario tiene conectado, una fila por pareja proveedor+credencial,
+    /// ya ordenado para presentarse.
+    ///
+    /// Se compone aquí y no en la interfaz porque agrupar por eje de credencial y
+    /// decidir qué cuenta exige atención es dominio, no presentación. La vista lo
+    /// hacía por su cuenta y se equivocaba: filtraba por tipo de credencial sin mirar
+    /// el proveedor, así que cualquier proveedor propio con API key aparecía además
+    /// dentro de la caja de OpenAI (spec 0003).
+    pub fn provider_rows(&self) -> Result<Vec<ProviderRow>> {
+        let catalog = self.db.catalog_rows()?;
+        let custom = self.db.custom_providers()?;
+
+        let mut rows: Vec<ProviderRow> = self
+            .db
+            .accounts()?
+            .into_iter()
+            .filter(|a| a.status != "revoked")
+            .map(|a| {
+                let models = catalog
+                    .iter()
+                    .filter(|r| {
+                        r.provider_id == a.provider_id
+                            && r.credential_kind == a.credential_kind.as_str()
+                    })
+                    .count();
+                let manage = if custom.iter().any(|c| c.id == a.provider_id) {
+                    RowManage::CustomProvider
+                } else if a.credential_kind == CredentialKind::Local {
+                    RowManage::LocalServer
+                } else {
+                    RowManage::Account
+                };
+
+                ProviderRow {
+                    note: route_note(&a.provider_id, a.credential_kind),
+                    account_id: a.id,
+                    provider_id: a.provider_id,
+                    credential_kind: a.credential_kind.as_str().to_string(),
+                    name: a.label,
+                    needs_attention: needs_attention(&a.status),
+                    status: a.status,
+                    models,
+                    address: a.external_id.filter(|v| v.starts_with("http")),
+                    manage,
+                    expires_at: a.expires_at,
+                    created_at: a.created_at,
+                }
+            })
+            .collect();
+
+        // Lo que exige actuar, delante: si el usuario no despliega la fila, el
+        // estado de la línea plegada es lo único que va a leer.
+        rows.sort_by(|a, b| {
+            b.needs_attention
+                .cmp(&a.needs_attention)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.credential_kind.cmp(&b.credential_kind))
+        });
+        Ok(rows)
+    }
+
+    /// Las vías que el usuario puede dar de alta, con la forma de formulario que
+    /// necesita cada una.
+    ///
+    /// Lo declara el núcleo y no la interfaz por el mismo motivo que
+    /// `grantable_routes()`: la lista escrita a mano en la vista se quedó sin
+    /// `lmstudio` al añadirlo y dejó los modelos locales imposibles de autorizar.
+    /// Un proveedor nuevo que encaje en una de las formas no debe tocar la vista.
+    pub fn connect_options(&self) -> Result<Vec<ConnectOption>> {
+        let accounts = self.db.accounts()?;
+        let connected = |provider: &str, kind: CredentialKind| {
+            accounts
+                .iter()
+                .any(|a| a.provider_id == provider && a.credential_kind == kind && a.status != "revoked")
+        };
+        let lmstudio_url = self.db.settings().unwrap_or_default().lmstudio_base_url;
+
+        let mut out = vec![
+            ConnectOption {
+                id: AdapterId::new("openai", CredentialKind::SubscriptionOauth).slug(),
+                name: "ChatGPT por suscripción".into(),
+                summary: "Usa el plan que ya pagas, sin API key y sin coste por token.".into(),
+                form: ConnectForm::SubscriptionOauth,
+                note: None,
+                already_connected: connected("openai", CredentialKind::SubscriptionOauth),
+                docs_url: None,
+            },
+            ConnectOption {
+                id: AdapterId::new("lmstudio", CredentialKind::Local).slug(),
+                name: "LM Studio".into(),
+                summary: "Modelos que corren en tu equipo. Nada sale de la máquina y no hay coste por token.".into(),
+                form: ConnectForm::LocalServer { default_url: lmstudio_url },
+                note: route_note("lmstudio", CredentialKind::Local),
+                already_connected: connected("lmstudio", CredentialKind::Local),
+                docs_url: None,
+            },
+            ConnectOption {
+                id: AdapterId::new("openai", CredentialKind::ApiKey).slug(),
+                name: "OpenAI por API key".into(),
+                summary: "Vía estable y documentada. Se factura por token y sirve de respaldo si la suscripción deja de funcionar.".into(),
+                form: ConnectForm::ApiKey,
+                note: route_note("openai", CredentialKind::ApiKey),
+                already_connected: connected("openai", CredentialKind::ApiKey),
+                docs_url: None,
+            },
+        ];
+
+        // Los atajos OpenAI-compatible: nombre y dirección ya puestos.
+        for preset in openai_compat::presets() {
+            out.push(ConnectOption {
+                id: format!("preset:{}", util::slugify(preset.suggested_name)),
+                name: preset.suggested_name.to_string(),
+                summary: "Atajo con la dirección ya rellena: solo tienes que pegar la clave.".into(),
+                form: ConnectForm::CompatEndpoint {
+                    suggested_name: preset.suggested_name.to_string(),
+                    base_url: preset.base_url.to_string(),
+                },
+                note: None,
+                already_connected: connected(
+                    &util::slugify(preset.suggested_name),
+                    CredentialKind::ApiKey,
+                ),
+                docs_url: Some(preset.docs_url.to_string()),
+            });
+        }
+
+        // Y el caso general, siempre al final: cualquier otro servicio compatible.
+        out.push(ConnectOption {
+            id: "compat:custom".into(),
+            name: "Otro servicio OpenAI-compatible".into(),
+            summary: "OpenRouter, un proxy propio, un servidor de tu empresa… Puedes añadir varios, cada uno con su nombre.".into(),
+            form: ConnectForm::CompatEndpoint {
+                suggested_name: String::new(),
+                base_url: String::new(),
+            },
+            note: Some(
+                "El catálogo se cruza con models.dev para saber sus capacidades y su \
+                 precio; lo que no aparezca ahí se ofrece solo como texto."
+                    .into(),
+            ),
+            already_connected: false,
+            docs_url: None,
+        });
+
+        Ok(out)
+    }
+
     // -- Ciclo de una petición --------------------------------------------
 
     /// Resuelve modelo, permisos, límites y credencial. No envía nada todavía.
@@ -1376,6 +1524,117 @@ impl Collector {
     pub fn provider_request_id(&self) -> Option<String> {
         self.provider_request_id.clone()
     }
+}
+
+/// Forma del formulario de alta. La interfaz tiene una rama por forma, no por
+/// proveedor: así Ollama entra como `LocalServer`, Anthropic por clave como `ApiKey`
+/// y Gemini por OAuth como `SubscriptionOauth`, sin tocar la vista.
+///
+/// No es una descripción genérica de campos a propósito: los flujos no se distinguen
+/// por qué campos piden, sino por lo que pasa alrededor —el de suscripción exige
+/// aceptar un aviso y esperar un callback del navegador, el local se comprueba antes
+/// de guardar—, y un constructor genérico de campos no expresa eso.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectForm {
+    /// Aviso de riesgo obligatorio (ADR 0001) y login en el navegador.
+    SubscriptionOauth,
+    /// Un servidor en la máquina del usuario: solo dirección, y se comprueba.
+    LocalServer { default_url: String },
+    /// Clave y etiqueta opcional, contra un proveedor conocido.
+    ApiKey,
+    /// Nombre, dirección y clave. Los dos primeros vienen rellenos si es un atajo,
+    /// pero siguen siendo editables: prefijar es una comodidad, no un candado, y si
+    /// el proveedor cambia su dirección el usuario tiene que poder corregirla.
+    CompatEndpoint { suggested_name: String, base_url: String },
+}
+
+/// Una vía que el usuario puede dar de alta.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectOption {
+    /// Identificador estable para la interfaz, del estilo «openai:subscription_oauth».
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub form: ConnectForm,
+    /// Lo que el usuario necesita saber antes de darle. Nace de confusiones reales.
+    pub note: Option<String>,
+    /// Si ya hay una cuenta por esta vía. Se ofrece igual, pero avisando.
+    pub already_connected: bool,
+    /// Documentación del proveedor, cuando la tiene.
+    pub docs_url: Option<String>,
+}
+
+/// La nota que el usuario necesita saber de una vía, si tiene alguna.
+///
+/// Un único origen para las dos veces que se muestra —al dar de alta y en el detalle
+/// de la fila—, porque tenerla escrita en los dos sitios es la forma de que uno se
+/// quede atrás. Nacen de confusiones reales, no son adorno.
+fn route_note(provider_id: &str, kind: CredentialKind) -> Option<String> {
+    match (provider_id, kind) {
+        ("lmstudio", CredentialKind::Local) => Some(
+            "La primera petición a un modelo que no esté cargado puede tardar bastante \
+             —unos 14 segundos en las pruebas con un modelo de 12B— porque LM Studio lo \
+             carga en ese momento. No es un cuelgue."
+                .into(),
+        ),
+        ("openai", CredentialKind::ApiKey) => Some(
+            "Se guarda en el Keychain del sistema, nunca en la base de datos ni en un \
+             fichero."
+                .into(),
+        ),
+        _ => None,
+    }
+}
+
+/// Si el estado de una cuenta exige que el usuario haga algo.
+///
+/// Lo desconocido cuenta como que exige atención, a propósito: un estado nuevo que
+/// nadie enseñe al usuario es peor que un aviso de más.
+fn needs_attention(status: &str) -> bool {
+    !matches!(status, "active")
+}
+
+/// Cómo se gestiona una fila: de qué comandos dispone.
+///
+/// Lo declara el núcleo porque no es cosmético: desconectar un proveedor añadido por
+/// el usuario no es lo mismo que desconectar una cuenta. Si la vista llamara a
+/// `disconnect_account` para un proveedor propio, su definición quedaría huérfana en
+/// `custom_providers` y volvería a aparecer sin cuenta.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowManage {
+    /// Solo se desconecta.
+    Account,
+    /// Servidor local: dirección editable y comprobación bajo demanda.
+    LocalServer,
+    /// Proveedor añadido por el usuario: dirección editable, y al quitarlo se borra
+    /// también su definición, no solo la cuenta.
+    CustomProvider,
+}
+
+/// Una vía conectada, tal como se presenta en la pestaña de Proveedores.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderRow {
+    pub account_id: String,
+    pub provider_id: String,
+    pub credential_kind: String,
+    /// Etiqueta de la cuenta: «ChatGPT (correo)», «OpenCode Zen», «LM Studio (url)».
+    pub name: String,
+    pub status: String,
+    /// Modelos que ofrece esta pareja proveedor+credencial, del catálogo ya guardado.
+    /// No se pregunta al proveedor: abrir una pestaña no debe generar tráfico.
+    pub models: usize,
+    /// Dirección del servidor, cuando la vía tiene una.
+    pub address: Option<String>,
+    /// De qué comandos dispone esta fila.
+    pub manage: RowManage,
+    /// Lo que el usuario necesita saber de esta vía. Mismo origen que en el alta.
+    pub note: Option<String>,
+    pub expires_at: Option<i64>,
+    pub created_at: i64,
+    /// Si esta fila exige atención. Decide el orden y el aviso.
+    pub needs_attention: bool,
 }
 
 /// Una vía a la que se puede conceder acceso.
@@ -1940,6 +2199,261 @@ mod tests {
         let n = nexo();
         // "mock" es integrado: no debe ni mirar `custom_providers`.
         assert!(n.adapter_for("mock", CredentialKind::Mock).is_some());
+    }
+
+    // -- Filas de la pestaña de Proveedores (spec 0003) ---------------------
+
+    /// El fallo que motivó la especificación 0003: la interfaz agrupaba por tipo de
+    /// credencial sin mirar el proveedor, así que un proveedor propio con API key
+    /// salía además dentro de «OpenAI por API key», duplicado.
+    #[tokio::test]
+    async fn provider_rows_keep_each_api_key_provider_in_its_own_row() {
+        let n = nexo();
+        n.add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", "sk-z")
+            .await
+            .unwrap();
+        n.connect_openai_api_key("sk-o", Some("OpenAI personal")).unwrap();
+
+        let rows = n.provider_rows().unwrap();
+        let api_key_rows: Vec<_> = rows.iter().filter(|r| r.credential_kind == "api_key").collect();
+        assert_eq!(api_key_rows.len(), 2, "dos cuentas de API key, dos filas");
+
+        let zen = rows.iter().filter(|r| r.provider_id == "opencode-zen").count();
+        assert_eq!(zen, 1, "el proveedor propio aparece una sola vez");
+        let openai = rows.iter().filter(|r| r.provider_id == "openai").count();
+        assert_eq!(openai, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_rows_count_the_models_of_that_exact_route() {
+        let n = nexo();
+        n.connect_openai_api_key("sk-o", None).unwrap();
+
+        let row = n
+            .provider_rows()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.provider_id == "openai")
+            .expect("fila de OpenAI");
+
+        let esperado = n
+            .db()
+            .catalog_rows()
+            .unwrap()
+            .iter()
+            .filter(|r| r.provider_id == "openai" && r.credential_kind == "api_key")
+            .count();
+        assert_eq!(row.models, esperado);
+        assert!(row.models > 0, "el catálogo de OpenAI por API key no está vacío");
+    }
+
+    #[test]
+    fn provider_rows_only_include_routes_that_have_an_account() {
+        let n = nexo();
+        // El catálogo trae vías (mock, openai) sin ninguna cuenta conectada.
+        assert!(!n.db().catalog_rows().unwrap().is_empty());
+        assert!(
+            n.provider_rows().unwrap().is_empty(),
+            "sin cuentas no hay nada conectado que mostrar"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_rows_put_what_needs_attention_first() {
+        let n = nexo();
+        n.add_custom_provider("Alfa", "https://a.example/v1", "sk-a").await.unwrap();
+        n.add_custom_provider("Zeta", "https://z.example/v1", "sk-z").await.unwrap();
+
+        // «Zeta» iría última por nombre, pero está rota: tiene que salir primera.
+        let zeta = n.db().account_for("zeta", CredentialKind::ApiKey).unwrap().unwrap();
+        n.db().set_account_status(&zeta.id, "broken").unwrap();
+
+        let rows = n.provider_rows().unwrap();
+        assert_eq!(rows[0].name, "Zeta");
+        assert!(rows[0].needs_attention);
+        assert_eq!(rows[1].name, "Alfa");
+        assert!(!rows[1].needs_attention);
+    }
+
+    /// La nota se muestra en dos sitios —al dar de alta y en el detalle de la fila— y
+    /// tiene que salir del mismo sitio. Estaba escrita a mano en la vista además de en
+    /// el núcleo, que es la forma de que una de las dos se quede atrás.
+    #[tokio::test]
+    async fn the_note_of_a_route_has_a_single_source() {
+        let n = nexo();
+        n.connect_openai_api_key("sk-o", None).unwrap();
+
+        let row = n
+            .provider_rows()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.provider_id == "openai")
+            .unwrap();
+        let option = n
+            .connect_options()
+            .unwrap()
+            .into_iter()
+            .find(|o| o.name == "OpenAI por API key")
+            .unwrap();
+
+        assert!(row.note.is_some(), "la fila trae su nota, no la escribe la vista");
+        assert_eq!(row.note, option.note);
+    }
+
+    #[test]
+    fn an_unknown_account_status_counts_as_needing_attention() {
+        // Un estado que nadie enseñe al usuario es peor que un aviso de más.
+        assert!(!needs_attention("active"));
+        assert!(needs_attention("broken"));
+        assert!(needs_attention("expired"));
+        assert!(needs_attention("algo_que_todavia_no_existe"));
+    }
+
+    /// Un proveedor propio se quita con `remove_custom_provider`, no con
+    /// `disconnect_account`: si no, su definición queda huérfana en `custom_providers`
+    /// y reaparece sin cuenta. La fila tiene que decirlo, no adivinarlo la vista.
+    #[tokio::test]
+    async fn each_row_declares_how_it_is_managed() {
+        let n = nexo();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        n.connect_openai_api_key("sk-o", None).unwrap();
+
+        let rows = n.provider_rows().unwrap();
+
+        let runpod = rows.iter().find(|r| r.provider_id == "runpod").unwrap();
+        assert!(matches!(runpod.manage, RowManage::CustomProvider));
+        assert_eq!(runpod.address.as_deref(), Some("https://a.example/v1"));
+
+        let openai = rows.iter().find(|r| r.provider_id == "openai").unwrap();
+        assert!(matches!(openai.manage, RowManage::Account));
+        assert!(openai.address.is_none(), "OpenAI no tiene dirección que cambiar");
+    }
+
+    // -- Vías que se pueden dar de alta (spec 0003) -------------------------
+
+    #[test]
+    fn connect_options_cover_the_four_form_shapes() {
+        let options = nexo().connect_options().unwrap();
+
+        let mut formas: Vec<&str> = options
+            .iter()
+            .map(|o| match o.form {
+                ConnectForm::SubscriptionOauth => "subscription_oauth",
+                ConnectForm::LocalServer { .. } => "local_server",
+                ConnectForm::ApiKey => "api_key",
+                ConnectForm::CompatEndpoint { .. } => "compat_endpoint",
+            })
+            .collect();
+        formas.sort_unstable();
+        formas.dedup();
+        assert_eq!(
+            formas,
+            vec!["api_key", "compat_endpoint", "local_server", "subscription_oauth"],
+            "la vista tiene una rama por forma: si aparece una nueva, hay que añadirla"
+        );
+
+        // Y los identificadores no se repiten: la interfaz los usa como clave.
+        let mut ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "identificadores repetidos");
+    }
+
+    #[test]
+    fn the_opencode_zen_shortcut_arrives_with_its_name_and_address_filled() {
+        let options = nexo().connect_options().unwrap();
+        let zen = options
+            .iter()
+            .find(|o| o.name == "OpenCode Zen")
+            .expect("el atajo de Zen debe ofrecerse");
+
+        match &zen.form {
+            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+                assert_eq!(suggested_name, "OpenCode Zen");
+                assert_eq!(base_url, "https://opencode.ai/zen/v1");
+            }
+            other => panic!("Zen no es un endpoint compatible: {other:?}"),
+        }
+        assert!(zen.docs_url.is_some());
+    }
+
+    #[test]
+    fn the_generic_compatible_option_leaves_every_field_empty() {
+        let options = nexo().connect_options().unwrap();
+        let generic = options
+            .iter()
+            .rfind(|o| matches!(o.form, ConnectForm::CompatEndpoint { .. }))
+            .expect("debe haber una opción para un servicio cualquiera");
+
+        match &generic.form {
+            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+                assert!(suggested_name.is_empty(), "el caso general no prerrellena nada");
+                assert!(base_url.is_empty());
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            generic.id == "compat:custom",
+            "el caso general va al final de la lista"
+        );
+    }
+
+    #[test]
+    fn the_local_server_option_offers_the_address_the_core_actually_uses() {
+        let n = nexo();
+        let mut s = n.db().settings().unwrap();
+        s.lmstudio_base_url = "http://localhost:4321".into();
+        n.db().save_settings(&s).unwrap();
+
+        let options = n.connect_options().unwrap();
+        let local = options
+            .iter()
+            .find(|o| matches!(o.form, ConnectForm::LocalServer { .. }))
+            .unwrap();
+        match &local.form {
+            ConnectForm::LocalServer { default_url } => {
+                assert_eq!(default_url, "http://localhost:4321");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn already_connected_tells_the_truth_for_every_option() {
+        let n = nexo();
+        assert!(n.connect_options().unwrap().iter().all(|o| !o.already_connected));
+
+        n.connect_openai_api_key("sk-o", None).unwrap();
+        n.add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", "sk-z")
+            .await
+            .unwrap();
+
+        let options = n.connect_options().unwrap();
+        let by_name = |name: &str| options.iter().find(|o| o.name == name).unwrap();
+        assert!(by_name("OpenAI por API key").already_connected);
+        assert!(by_name("OpenCode Zen").already_connected);
+        assert!(
+            !by_name("ChatGPT por suscripción").already_connected,
+            "la suscripción no está conectada en esta prueba"
+        );
+    }
+
+    /// Esta prueba no comprueba nada en ejecución: su valor es que el `match` es
+    /// exhaustivo, así que añadir una forma nueva rompe la compilación hasta que
+    /// alguien diga con qué comando se completa. Una forma que la interfaz ofrezca
+    /// y no se pueda terminar es un callejón sin salida.
+    #[test]
+    fn adding_a_form_shape_forces_naming_the_command_that_completes_it() {
+        for option in nexo().connect_options().unwrap() {
+            let comando = match option.form {
+                ConnectForm::SubscriptionOauth => "connect_chatgpt",
+                ConnectForm::LocalServer { .. } => "set_lmstudio_url + detect_lmstudio",
+                ConnectForm::ApiKey => "connect_openai_api_key",
+                ConnectForm::CompatEndpoint { .. } => "add_custom_provider",
+            };
+            assert!(!comando.is_empty(), "«{}» no tiene comando de alta", option.name);
+        }
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | --- | --- | --- | --- |
 | [0001](0001-proveedor-local-lm-studio/spec.md) | Usar los modelos de LM Studio desde Nexo | `hecho` | Verificada contra LM Studio 0.4.20. Ollama queda para otra |
 | [0002](0002-proveedores-genericos-y-opencode-zen/spec.md) | Proveedores OpenAI-compatible añadidos por el usuario, y OpenCode Zen | `hecho` | Verificada contra Zen real, 60 modelos. Anthropic-compatible aplazado a petición del usuario |
+| [0003](0003-vista-de-proveedores-legible/spec.md) | Una vista de Proveedores que se lee de un vistazo | `build` | Arregla además que un proveedor propio con API key salía duplicado y en la sección de OpenAI |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 

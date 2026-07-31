@@ -4,216 +4,219 @@
     errorText,
     formatTime,
     kindLabel,
-    type Account,
-    type CustomProvider,
+    type ConnectOption,
     type LmStudioStatus,
-    type ProviderPreset,
+    type ProviderRow,
     type RiskNotice,
   } from "../api";
 
   let { onchange }: { onchange: () => void } = $props();
 
-  let accounts = $state<Account[]>([]);
+  // La lista y el orden los decide el núcleo: agrupar por eje de credencial es
+  // dominio, y cuando lo hacía esta vista se equivocaba (spec 0003).
+  let rows = $state<ProviderRow[]>([]);
+  let options = $state<ConnectOption[]>([]);
   let notice = $state<RiskNotice | null>(null);
+  let lmstudio = $state<LmStudioStatus | null>(null);
+
   let error = $state<string | null>(null);
   let info = $state<string | null>(null);
+  let busy = $state(false);
 
-  let showRisk = $state(false);
+  /** Fila desplegada, por `account_id`. Solo una, como los permisos en Aplicaciones. */
+  let expanded = $state<string | null>(null);
+  /** Opción de alta elegida, por `id`. `null` mientras el panel está cerrado. */
+  let adding = $state<string | null>(null);
+
+  let addressDraft = $state("");
   let riskAccepted = $state(false);
-  let connecting = $state(false);
-
-  let apiKey = $state("");
-  let apiKeyLabel = $state("");
-
-  let lmstudio = $state<LmStudioStatus | null>(null);
-  let lmstudioUrl = $state("");
-  let checkingLmstudio = $state(false);
-
-  let presets = $state<ProviderPreset[]>([]);
-  let customProviders = $state<CustomProvider[]>([]);
-  let newProviderName = $state("");
-  let newProviderUrl = $state("");
-  let newProviderKey = $state("");
-  let addingProvider = $state(false);
-  let editingUrlFor = $state<string | null>(null);
-  let editingUrlValue = $state("");
-
-  async function loadCustomProviders() {
-    try {
-      presets = await api.providerPresets();
-      customProviders = await api.listCustomProviders();
-      if (!newProviderName && !newProviderUrl && presets.length > 0) {
-        usePreset(presets[0]);
-      }
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
-  /** Rellena nombre y URL desde un atajo; solo queda pedir la clave. */
-  function usePreset(preset: ProviderPreset) {
-    newProviderName = preset.suggested_name;
-    newProviderUrl = preset.base_url;
-    newProviderKey = "";
-  }
-
-  async function addProvider() {
-    addingProvider = true;
-    error = null;
-    try {
-      await api.addCustomProvider(newProviderName, newProviderUrl, newProviderKey);
-      info = `Proveedor «${newProviderName}» conectado.`;
-      newProviderName = "";
-      newProviderUrl = "";
-      newProviderKey = "";
-      await loadCustomProviders();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    } finally {
-      addingProvider = false;
-    }
-  }
-
-  async function removeProvider(p: CustomProvider) {
-    error = null;
-    try {
-      await api.removeCustomProvider(p.id);
-      info = `Proveedor «${p.name}» desconectado y clave eliminada del equipo.`;
-      await loadCustomProviders();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
-  function startEditUrl(p: CustomProvider) {
-    editingUrlFor = p.id;
-    editingUrlValue = p.base_url;
-  }
-
-  async function saveEditUrl(p: CustomProvider) {
-    error = null;
-    try {
-      await api.updateCustomProviderUrl(p.id, editingUrlValue);
-      editingUrlFor = null;
-      await loadCustomProviders();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
-  async function loadLmstudio() {
-    try {
-      lmstudio = await api.lmstudioStatus();
-      if (!lmstudioUrl) lmstudioUrl = lmstudio.base_url;
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
-  async function detectLmstudio() {
-    checkingLmstudio = true;
-    error = null;
-    info = null;
-    try {
-      lmstudio = await api.detectLmstudio();
-      info = lmstudio.reachable
-        ? `LM Studio conectado: ${lmstudio.models} modelo(s), ${lmstudio.loaded} cargado(s).`
-        : null;
-      await load();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    } finally {
-      checkingLmstudio = false;
-    }
-  }
-
-  async function saveLmstudioUrl() {
-    checkingLmstudio = true;
-    error = null;
-    try {
-      lmstudio = await api.setLmstudioUrl(lmstudioUrl);
-      lmstudioUrl = lmstudio.base_url;
-      await load();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    } finally {
-      checkingLmstudio = false;
-    }
-  }
+  let formName = $state("");
+  let formUrl = $state("");
+  let formKey = $state("");
+  let formLabel = $state("");
 
   async function load() {
     try {
-      accounts = await api.listAccounts();
-      notice = await api.riskNotice();
+      [rows, options, notice] = await Promise.all([
+        api.providerRows(),
+        api.connectOptions(),
+        api.riskNotice(),
+      ]);
       error = null;
     } catch (e) {
       error = errorText(e);
     }
   }
 
-  async function connectSubscription() {
-    connecting = true;
-    error = null;
-    info = "Completa la autorización en el navegador. Esta ventana esperará el callback.";
+  /** Estado de LM Studio: solo para el detalle de su fila y su formulario. */
+  async function loadLmstudio() {
     try {
-      await api.connectChatgpt(true);
-      info = "Cuenta de ChatGPT conectada.";
-      showRisk = false;
-      riskAccepted = false;
-      await load();
-      onchange();
+      lmstudio = await api.lmstudioStatus();
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  async function refresh() {
+    await load();
+    await loadLmstudio();
+    onchange();
+  }
+
+  /**
+   * Envuelve una acción: un solo sitio donde se limpian avisos y se recarga.
+   * `pending` se muestra mientras dura, para lo que tarda (el login de
+   * suscripción abre el navegador y espera el callback).
+   */
+  async function run(
+    action: () => Promise<void>,
+    { done, pending }: { done?: string; pending?: string } = {},
+  ) {
+    busy = true;
+    error = null;
+    info = pending ?? null;
+    try {
+      await action();
+      if (done) info = done;
+      await refresh();
     } catch (e) {
       error = errorText(e);
       info = null;
     } finally {
-      connecting = false;
+      busy = false;
     }
   }
 
-  async function saveApiKey() {
-    error = null;
-    try {
-      await api.connectApiKey(apiKey, apiKeyLabel || undefined);
-      apiKey = "";
-      apiKeyLabel = "";
-      info = "API key guardada en el almacén seguro del sistema.";
-      await load();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
+  function toggleRow(row: ProviderRow) {
+    if (expanded === row.account_id) {
+      expanded = null;
+      return;
+    }
+    expanded = row.account_id;
+    addressDraft = row.address ?? "";
+  }
+
+  function openAdd(option: ConnectOption) {
+    adding = adding === option.id ? null : option.id;
+    riskAccepted = false;
+    formKey = "";
+    formLabel = "";
+    if (option.form.kind === "compat_endpoint") {
+      formName = option.form.suggested_name;
+      formUrl = option.form.base_url;
+    } else if (option.form.kind === "local_server") {
+      formUrl = option.form.default_url;
     }
   }
 
-  async function disconnect(account: Account) {
-    error = null;
-    try {
-      await api.disconnectAccount(account.id);
-      info = `Cuenta desconectada y secretos eliminados del equipo.`;
-      await load();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    }
+  function closeAdd() {
+    adding = null;
+    formName = "";
+    formUrl = "";
+    formKey = "";
+    formLabel = "";
+    riskAccepted = false;
   }
 
-  const subscription = $derived(
-    accounts.filter((a) => a.credential_kind === "subscription_oauth"),
-  );
-  const keys = $derived(accounts.filter((a) => a.credential_kind === "api_key"));
+  // -- Acciones sobre una fila ya conectada ---------------------------------
 
-  const localAccounts = $derived(
-    accounts.filter((a) => a.credential_kind === "local"),
-  );
+  function disconnect(row: ProviderRow) {
+    const quitar =
+      row.manage.kind === "custom_provider"
+        ? () => api.removeCustomProvider(row.provider_id)
+        : () => api.disconnectAccount(row.account_id);
+    run(
+      async () => {
+        await quitar();
+        expanded = null;
+      },
+      { done: `«${row.name}» desconectado y sus secretos eliminados del equipo.` },
+    );
+  }
+
+  function saveAddress(row: ProviderRow) {
+    run(
+      async () => {
+        if (row.manage.kind === "custom_provider") {
+          await api.updateCustomProviderUrl(row.provider_id, addressDraft);
+        } else {
+          await api.setLmstudioUrl(addressDraft);
+        }
+      },
+      { done: "Dirección guardada." },
+    );
+  }
+
+  function checkLmstudio() {
+    run(async () => {
+      const status = await api.detectLmstudio();
+      info = status.reachable
+        ? `LM Studio responde: ${status.models} modelo(s), ${status.loaded} cargado(s).`
+        : (status.detail ?? "LM Studio no responde en esa dirección.");
+    });
+  }
+
+  // -- Alta -----------------------------------------------------------------
+
+  function connectSubscription(option: ConnectOption) {
+    // `connectChatgpt` es específico de ChatGPT, la única vía de suscripción que
+    // existe hoy. Cuando haya otra (Gemini por OAuth está en el ROADMAP) hará falta
+    // un comando por proveedor: la forma del formulario se comparte, el flujo no.
+    run(
+      async () => {
+        await api.connectChatgpt(true);
+        closeAdd();
+      },
+      {
+        pending:
+          "Completa la autorización en el navegador. Esta ventana espera el callback.",
+        done: `«${option.name}» conectado.`,
+      },
+    );
+  }
+
+  function connectLocalServer() {
+    run(
+      async () => {
+        const status = await api.setLmstudioUrl(formUrl);
+        if (!status.reachable) {
+          throw new Error(
+            status.detail ??
+              "No responde en esa dirección. Abre LM Studio y activa su servidor local.",
+          );
+        }
+        closeAdd();
+      },
+      { done: "LM Studio conectado." },
+    );
+  }
+
+  function connectApiKey() {
+    run(
+      async () => {
+        await api.connectApiKey(formKey, formLabel || undefined);
+        closeAdd();
+      },
+      { done: "API key guardada en el Keychain del sistema." },
+    );
+  }
+
+  function connectCompat() {
+    const nombre = formName;
+    run(
+      async () => {
+        await api.addCustomProvider(formName, formUrl, formKey);
+        closeAdd();
+      },
+      { done: `Proveedor «${nombre}» conectado.` },
+    );
+  }
+
+  const chosen = $derived(options.find((o) => o.id === adding) ?? null);
 
   $effect(() => {
     load();
     loadLmstudio();
-    loadCustomProviders();
   });
 </script>
 
@@ -224,258 +227,311 @@
   <section class="card stack">
     <div class="row" style="justify-content: space-between">
       <div>
-        <h2>ChatGPT por suscripción</h2>
+        <h2>Conectados</h2>
         <p class="muted">
-          Usa el plan que ya pagas, sin API key y sin coste por token.
+          Una línea por proveedor y vía de acceso. Pulsa una para ver su detalle.
         </p>
       </div>
-      {#if subscription.length === 0}
-        <button class="primary" onclick={() => (showRisk = true)} disabled={connecting}>
-          Conectar ChatGPT
-        </button>
-      {/if}
-    </div>
-
-    {#if showRisk && notice}
-      <div class="risk">
-        <h3>{notice.title}</h3>
-        <ul>
-          {#each notice.points as point}
-            <li>{point}</li>
-          {/each}
-        </ul>
-        <label class="check">
-          <input type="checkbox" bind:checked={riskAccepted} />
-          <span>{notice.confirm_label}</span>
-        </label>
-        <div class="row">
-          <button
-            class="primary"
-            disabled={!riskAccepted || connecting}
-            onclick={connectSubscription}
-          >
-            {connecting ? "Esperando autorización…" : "Iniciar sesión en el navegador"}
-          </button>
-          <button
-            class="ghost"
-            disabled={connecting}
-            onclick={() => {
-              showRisk = false;
-              riskAccepted = false;
-            }}
-          >
-            Cancelar
-          </button>
-        </div>
-      </div>
-    {/if}
-
-    {#each subscription as account (account.id)}
-      {@render accountRow(account)}
-    {/each}
-  </section>
-
-  <section class="card stack">
-    <div class="row" style="justify-content: space-between">
-      <div>
-        <h2>LM Studio</h2>
-        <p class="muted">
-          Modelos que corren en tu equipo. Nada sale de la máquina y no hay coste
-          por token.
-        </p>
-      </div>
-      <div class="row">
-        {#if lmstudio?.reachable}
-          <span class="badge ok">
-            {lmstudio.models} modelo(s) · {lmstudio.loaded} cargado(s)
-          </span>
-        {:else}
-          <span class="badge warn">No detectado</span>
-        {/if}
-        <button onclick={detectLmstudio} disabled={checkingLmstudio}>
-          {checkingLmstudio ? "Comprobando…" : "Comprobar ahora"}
-        </button>
-      </div>
-    </div>
-
-    {#if lmstudio && !lmstudio.reachable}
-      <div class="notice warn">
-        {lmstudio.detail ?? "No responde."} Abre LM Studio y activa su servidor
-        local; Nexo lo detecta al arrancar y cuando pulses «Comprobar ahora».
-      </div>
-    {/if}
-
-    {#each localAccounts as account (account.id)}
-      {@render accountRow(account)}
-    {/each}
-
-    <div class="key-form">
-      <div>
-        <label for="lmsurl">Dirección del servidor</label>
-        <input id="lmsurl" bind:value={lmstudioUrl} placeholder="http://127.0.0.1:1234" />
-      </div>
-      <div></div>
-      <button onclick={saveLmstudioUrl} disabled={checkingLmstudio || !lmstudioUrl.trim()}>
-        Guardar
+      <!-- `""` abre el panel sin ninguna opción elegida; `null` lo cierra. Comparar
+           con `null` explícitamente, porque `""` es falsy y `adding ? …` no cerraba. -->
+      <button class="primary" onclick={() => (adding = adding === null ? "" : null)}>
+        {adding === null ? "Añadir proveedor" : "Cerrar"}
       </button>
     </div>
-    <p class="muted small">
-      La primera petición a un modelo que no esté cargado puede tardar bastante
-      —unos 14 segundos en las pruebas con un modelo de 12B— porque LM Studio lo
-      carga en ese momento. No es un cuelgue.
-    </p>
-  </section>
 
-  <section class="card stack">
-    <div>
-      <h2>OpenAI por API key</h2>
+    {#if rows.length === 0}
       <p class="muted">
-        Vía estable y documentada. Se factura por token y sirve de respaldo si la
-        suscripción deja de funcionar.
+        Todavía no hay ningún proveedor conectado, así que tus aplicaciones no verán
+        modelos. Empieza con <strong>Añadir proveedor</strong>.
       </p>
-    </div>
+    {/if}
 
-    {#each keys as account (account.id)}
-      {@render accountRow(account)}
+    {#each rows as row (row.account_id)}
+      <div class="item" class:attention={row.needs_attention}>
+        <button class="line" onclick={() => toggleRow(row)}>
+          <span class="caret">{expanded === row.account_id ? "▾" : "▸"}</span>
+          <strong class="name">{row.name}</strong>
+          <span
+            class="badge"
+            class:sub={row.credential_kind === "subscription_oauth"}
+            class:key={row.credential_kind === "api_key"}
+          >
+            {kindLabel(row.credential_kind)}
+          </span>
+          {#if row.status === "active"}
+            <span class="badge ok">Activa</span>
+          {:else if row.status === "broken"}
+            <span class="badge err">Vía rota</span>
+          {:else if row.status === "expired"}
+            <span class="badge warn">
+              {row.credential_kind === "local" ? "Servidor apagado" : "Caducada"}
+            </span>
+          {:else}
+            <span class="badge warn">{row.status}</span>
+          {/if}
+          <span class="models muted">{row.models} modelo(s)</span>
+        </button>
+
+        {#if expanded === row.account_id}
+          <div class="detail stack">
+            <span class="muted small">
+              Conectada el {formatTime(row.created_at)}
+              {#if row.expires_at}
+                · token válido hasta {formatTime(row.expires_at)}
+              {/if}
+            </span>
+
+            {#if row.manage.kind === "account"}
+              {#if row.address}
+                <span class="muted small"><code>{row.address}</code></span>
+              {/if}
+            {:else}
+              <div class="key-form">
+                <div>
+                  <label for="addr-{row.account_id}">Dirección del servidor</label>
+                  <input id="addr-{row.account_id}" bind:value={addressDraft} />
+                </div>
+                <div></div>
+                <button
+                  onclick={() => saveAddress(row)}
+                  disabled={busy || !addressDraft.trim() || addressDraft === row.address}
+                >
+                  Guardar
+                </button>
+              </div>
+            {/if}
+
+            {#if row.manage.kind === "local_server"}
+              <div class="row">
+                <button onclick={checkLmstudio} disabled={busy}>
+                  {busy ? "Comprobando…" : "Comprobar ahora"}
+                </button>
+                {#if lmstudio}
+                  <span class="muted small">
+                    {lmstudio.reachable
+                      ? `${lmstudio.models} modelo(s), ${lmstudio.loaded} cargado(s)`
+                      : (lmstudio.detail ?? "No responde")}
+                  </span>
+                {/if}
+              </div>
+            {/if}
+
+            {#if row.note}
+              <p class="muted small">{row.note}</p>
+            {/if}
+
+            <div class="row">
+              <button class="danger" onclick={() => disconnect(row)} disabled={busy}>
+                Desconectar
+              </button>
+            </div>
+          </div>
+        {/if}
+      </div>
     {/each}
-
-    <div class="key-form">
-      <div>
-        <label for="apikey">API key</label>
-        <input id="apikey" type="password" bind:value={apiKey} placeholder="sk-…" />
-      </div>
-      <div>
-        <label for="apilabel">Etiqueta (opcional)</label>
-        <input id="apilabel" bind:value={apiKeyLabel} placeholder="OpenAI personal" />
-      </div>
-      <button onclick={saveApiKey} disabled={!apiKey.trim()}>Guardar</button>
-    </div>
-    <p class="muted small">
-      Se guarda en el Keychain del sistema, nunca en la base de datos ni en un fichero.
-    </p>
   </section>
 
-  <section class="card stack">
-    <div>
-      <h2>Otros proveedores OpenAI-compatible</h2>
-      <p class="muted">
-        Cualquier servicio que hable el formato de OpenAI: OpenCode Zen, OpenRouter,
-        un proxy propio… Puedes añadir varios, cada uno con su nombre.
-      </p>
-    </div>
+  {#if adding !== null}
+    <section class="card stack">
+      <div>
+        <h2>Añadir proveedor</h2>
+        <p class="muted">Elige una vía. Solo se te pedirá lo que esa vía necesita.</p>
+      </div>
 
-    {#if presets.length > 0}
-      <div class="row" style="flex-wrap: wrap">
-        {#each presets as preset (preset.suggested_name)}
-          <button onclick={() => usePreset(preset)}>
-            Usar {preset.suggested_name}
+      <div class="options">
+        {#each options as option (option.id)}
+          <button
+            class="option"
+            class:chosen={adding === option.id}
+            onclick={() => openAdd(option)}
+          >
+            <span class="row">
+              <strong>{option.name}</strong>
+              {#if option.already_connected}
+                <span class="badge ok">Ya conectado</span>
+              {/if}
+            </span>
+            <span class="muted small">{option.summary}</span>
           </button>
         {/each}
       </div>
-      <p class="muted small">
-        Nombre y dirección ya vienen rellenos: solo tienes que pegar la clave.
-      </p>
-    {/if}
 
-    {#each customProviders as provider (provider.id)}
-      <div class="account">
-        <div class="stack" style="gap: 0.2rem; flex: 1">
-          <div class="row">
-            <strong>{provider.name}</strong>
-            <span class="badge key">API key</span>
-          </div>
-          {#if editingUrlFor === provider.id}
+      {#if chosen}
+        <div class="form stack">
+          {#if chosen.note}
+            <p class="muted small">{chosen.note}</p>
+          {/if}
+
+          {#if chosen.form.kind === "subscription_oauth"}
+            {#if notice}
+              <div class="risk">
+                <h3>{notice.title}</h3>
+                <ul>
+                  {#each notice.points as point}
+                    <li>{point}</li>
+                  {/each}
+                </ul>
+                <label class="check">
+                  <input type="checkbox" bind:checked={riskAccepted} />
+                  <span>{notice.confirm_label}</span>
+                </label>
+              </div>
+            {/if}
             <div class="row">
-              <input bind:value={editingUrlValue} style="font-size: 0.8rem" />
-              <button onclick={() => saveEditUrl(provider)}>Guardar</button>
-              <button class="ghost" onclick={() => (editingUrlFor = null)}>Cancelar</button>
+              <button
+                class="primary"
+                disabled={!riskAccepted || busy}
+                onclick={() => connectSubscription(chosen)}
+              >
+                {busy ? "Esperando autorización…" : "Iniciar sesión en el navegador"}
+              </button>
+              <button class="ghost" onclick={closeAdd} disabled={busy}>Cancelar</button>
+            </div>
+          {:else if chosen.form.kind === "local_server"}
+            <div class="key-form">
+              <div>
+                <label for="new-local-url">Dirección del servidor</label>
+                <input id="new-local-url" bind:value={formUrl} />
+              </div>
+              <div></div>
+              <button
+                class="primary"
+                onclick={connectLocalServer}
+                disabled={busy || !formUrl.trim()}
+              >
+                {busy ? "Comprobando…" : "Conectar"}
+              </button>
+            </div>
+          {:else if chosen.form.kind === "api_key"}
+            <div class="key-form">
+              <div>
+                <label for="new-key">API key</label>
+                <input id="new-key" type="password" bind:value={formKey} placeholder="sk-…" />
+              </div>
+              <div>
+                <label for="new-key-label">Etiqueta (opcional)</label>
+                <input id="new-key-label" bind:value={formLabel} placeholder="OpenAI personal" />
+              </div>
+              <button class="primary" onclick={connectApiKey} disabled={busy || !formKey.trim()}>
+                Guardar
+              </button>
             </div>
           {:else}
-            <button class="ghost small-link" onclick={() => startEditUrl(provider)}>
-              <code>{provider.base_url}</code>
-            </button>
+            <div class="key-form three">
+              <div>
+                <label for="new-name">Nombre</label>
+                <input id="new-name" bind:value={formName} placeholder="Mi proveedor" />
+              </div>
+              <div>
+                <label for="new-url">URL base</label>
+                <input id="new-url" bind:value={formUrl} placeholder="https://…/v1" />
+              </div>
+              <div>
+                <label for="new-compat-key">API key</label>
+                <input
+                  id="new-compat-key"
+                  type="password"
+                  bind:value={formKey}
+                  placeholder="sk-…"
+                />
+              </div>
+              <button
+                class="primary"
+                onclick={connectCompat}
+                disabled={busy || !formName.trim() || !formUrl.trim() || !formKey.trim()}
+              >
+                {busy ? "Conectando…" : "Añadir"}
+              </button>
+            </div>
+          {/if}
+
+          {#if chosen.docs_url}
+            <span class="muted small">Documentación: <code>{chosen.docs_url}</code></span>
           {/if}
         </div>
-        <button class="danger" onclick={() => removeProvider(provider)}>Desconectar</button>
-      </div>
-    {/each}
-
-    <div class="key-form three">
-      <div>
-        <label for="providername">Nombre</label>
-        <input id="providername" bind:value={newProviderName} placeholder="OpenCode Zen" />
-      </div>
-      <div>
-        <label for="providerurl">URL base</label>
-        <input
-          id="providerurl"
-          bind:value={newProviderUrl}
-          placeholder="https://opencode.ai/zen/v1"
-        />
-      </div>
-      <div>
-        <label for="providerkey">API key</label>
-        <input id="providerkey" type="password" bind:value={newProviderKey} placeholder="sk-…" />
-      </div>
-      <button
-        class="primary"
-        onclick={addProvider}
-        disabled={addingProvider || !newProviderName.trim() || !newProviderUrl.trim() || !newProviderKey.trim()}
-      >
-        {addingProvider ? "Conectando…" : "Añadir"}
-      </button>
-    </div>
-    <p class="muted small">
-      La clave va al Keychain del sistema, como las demás. El catálogo se cruza con
-      <code>models.dev</code> para saber sus capacidades y su precio; lo que no
-      aparezca ahí se ofrece solo como texto.
-    </p>
-  </section>
+      {/if}
+    </section>
+  {/if}
 </div>
 
-{#snippet accountRow(account: Account)}
-  <div class="account">
-    <div class="stack" style="gap: 0.2rem">
-      <div class="row">
-        <strong>{account.label}</strong>
-        <span
-          class="badge"
-          class:sub={account.credential_kind === "subscription_oauth"}
-          class:key={account.credential_kind === "api_key"}
-        >
-          {kindLabel(account.credential_kind)}
-        </span>
-        {#if account.status === "active"}
-          <span class="badge ok">Activa</span>
-        {:else if account.status === "broken"}
-          <span class="badge err">Vía rota</span>
-        {:else if account.status === "expired" && account.credential_kind === "local"}
-          <span class="badge warn">Servidor apagado</span>
-        {:else}
-          <span class="badge warn">{account.status}</span>
-        {/if}
-      </div>
-      <span class="muted small">
-        Conectada el {formatTime(account.created_at)}
-        {#if account.expires_at}
-          · token válido hasta {formatTime(account.expires_at)}
-        {/if}
-      </span>
-    </div>
-    <button class="danger" onclick={() => disconnect(account)}>Desconectar</button>
-  </div>
-{/snippet}
-
 <style>
-  .account {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.7rem 0.8rem;
+  .item {
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface-2);
+    overflow: hidden;
+  }
+
+  /* Lo que exige actuar se distingue sin desplegar. */
+  .item.attention {
+    border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  }
+
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    background: none;
+    border: 0;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .caret {
+    color: var(--muted);
+    font-size: 0.75rem;
+    width: 0.8rem;
+    flex: none;
+  }
+
+  .name {
+    /* Una dirección larga no debe empujar el estado fuera de la línea. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 22rem;
+  }
+
+  .models {
+    margin-left: auto;
+    font-size: 0.8rem;
+    flex: none;
+  }
+
+  .detail {
+    padding: 0 0.8rem 0.8rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.7rem;
+  }
+
+  .options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0.6rem;
+  }
+
+  .option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+    padding: 0.7rem 0.8rem;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+    cursor: pointer;
+  }
+
+  .option.chosen {
+    border-color: var(--accent);
+  }
+
+  .form {
+    border-top: 1px solid var(--border);
+    padding-top: 0.9rem;
   }
 
   .risk {
@@ -521,16 +577,6 @@
 
   .key-form.three {
     grid-template-columns: 1.2fr 1.6fr 1.2fr auto;
-  }
-
-  .small-link {
-    padding: 0;
-    text-align: left;
-    justify-content: flex-start;
-  }
-
-  .small-link code {
-    font-size: 0.78rem;
   }
 
   .small {

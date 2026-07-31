@@ -157,11 +157,52 @@ export interface CustomProvider {
   created_at: number;
 }
 
-/** Atajo con la URL ya rellena, como OpenCode Zen. */
-export interface ProviderPreset {
-  suggested_name: string;
-  base_url: string;
-  docs_url: string;
+/**
+ * De qué comandos dispone una fila. Lo declara el núcleo porque no es cosmético:
+ * un proveedor propio se quita con `removeCustomProvider`, y hacerlo con
+ * `disconnectAccount` dejaría su definición huérfana.
+ */
+export type RowManage =
+  | { kind: "account" }
+  | { kind: "local_server" }
+  | { kind: "custom_provider" };
+
+/** Una vía conectada, tal como la compone el núcleo para esta pestaña. */
+export interface ProviderRow {
+  account_id: string;
+  provider_id: string;
+  credential_kind: CredentialKind;
+  name: string;
+  status: string;
+  models: number;
+  address: string | null;
+  manage: RowManage;
+  note: string | null;
+  expires_at: number | null;
+  created_at: number;
+  needs_attention: boolean;
+}
+
+/**
+ * Forma del formulario de alta. La vista tiene una rama por forma, no por
+ * proveedor: al ser una unión discriminada, TypeScript avisa si el núcleo añade
+ * una forma que la vista no cubre.
+ */
+export type ConnectForm =
+  | { kind: "subscription_oauth" }
+  | { kind: "local_server"; default_url: string }
+  | { kind: "api_key" }
+  | { kind: "compat_endpoint"; suggested_name: string; base_url: string };
+
+/** Una vía que se puede dar de alta. La lista la declara el núcleo. */
+export interface ConnectOption {
+  id: string;
+  name: string;
+  summary: string;
+  form: ConnectForm;
+  note: string | null;
+  already_connected: boolean;
+  docs_url: string | null;
 }
 
 export interface LocalModelDetail {
@@ -215,7 +256,8 @@ export const api = {
     invoke<LmStudioStatus>("set_lmstudio_url", { baseUrl }),
   lmstudioModels: () => invoke<LocalModelDetail[]>("lmstudio_models"),
 
-  providerPresets: () => invoke<ProviderPreset[]>("provider_presets"),
+  providerRows: () => invoke<ProviderRow[]>("provider_rows"),
+  connectOptions: () => invoke<ConnectOption[]>("connect_options"),
   listCustomProviders: () => invoke<CustomProvider[]>("list_custom_providers"),
   addCustomProvider: (name: string, baseUrl: string, apiKey: string) =>
     invoke<CustomProvider>("add_custom_provider", { name, baseUrl, apiKey }),

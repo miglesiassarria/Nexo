@@ -149,6 +149,15 @@ OAuth y configuración no sensible. Cada aplicación recibe un token propio,
 revocable y limitado, para no compartir una credencial maestra con todas las
 herramientas. Los tokens emitidos se guardan **hasheados**.
 
+La pestaña de Proveedores muestra **una línea por proveedor y vía de acceso** —nombre,
+vía, estado y cuántos modelos ofrece— y el detalle se despliega al pulsarla. Dar de
+alta algo nuevo es una acción aparte, no un formulario permanente en pantalla. Que la
+unidad sea la pareja proveedor+credencial no es una decisión visual: es la misma con
+la que se indexan el catálogo, los permisos, los límites y las estadísticas, y cuando
+la interfaz agrupaba solo por tipo de credencial un proveedor añadido por el usuario
+aparecía duplicado dentro de la caja de OpenAI. La lista de vías que se pueden dar de
+alta la declara el núcleo, para que un proveedor nuevo no obligue a tocar la interfaz.
+
 ### Políticas y permisos
 
 El usuario decide qué aplicaciones pueden usar Nexo, con qué proveedores, vías y

@@ -7,9 +7,10 @@ use nexo_core::config::Settings;
 use nexo_core::db::{Account, CatalogRow, CustomProvider};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
-use nexo_core::provider::openai_compat::{self, ProviderPreset};
 use nexo_core::provider::CredentialKind;
-use nexo_core::service::{CatalogRefresh, GatewayStatus, GrantableRoute};
+use nexo_core::service::{
+    CatalogRefresh, ConnectOption, GatewayStatus, GrantableRoute, ProviderRow,
+};
 use nexo_core::util;
 use serde::Serialize;
 use serde_json::Value;
@@ -142,13 +143,22 @@ pub async fn lmstudio_models(state: State<'_, AppState>) -> CmdResult<Vec<LocalM
     Ok(nexo.lmstudio_model_details().await)
 }
 
-// -- Proveedores OpenAI-compatible añadidos por el usuario ------------------
+// -- Pestaña de Proveedores -------------------------------------------------
 
-/// Atajos con la URL ya rellena, como OpenCode Zen: la interfaz solo pide la clave.
+/// Lo que hay conectado, una fila por proveedor y vía, ya ordenado.
 #[tauri::command]
-pub fn provider_presets() -> Vec<ProviderPreset> {
-    openai_compat::presets().to_vec()
+pub fn provider_rows(state: State<'_, AppState>) -> CmdResult<Vec<ProviderRow>> {
+    state.nexo.provider_rows().map_err(map_err)
 }
+
+/// Las vías que se pueden dar de alta, cada una con su forma de formulario.
+/// Sustituye a `provider_presets`: los atajos son un caso de esto.
+#[tauri::command]
+pub fn connect_options(state: State<'_, AppState>) -> CmdResult<Vec<ConnectOption>> {
+    state.nexo.connect_options().map_err(map_err)
+}
+
+// -- Proveedores OpenAI-compatible añadidos por el usuario ------------------
 
 #[tauri::command]
 pub fn list_custom_providers(state: State<'_, AppState>) -> CmdResult<Vec<CustomProvider>> {
