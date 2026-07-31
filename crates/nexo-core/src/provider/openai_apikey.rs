@@ -456,8 +456,10 @@ mod tests {
         r.top_p = Some(0.8);
         r.stop = vec!["FIN".into()];
         let body = build_chat_completions(&r);
-        assert_eq!(body["temperature"], 0.3);
-        assert_eq!(body["top_p"], 0.8);
+        // Comparación por tolerancia: el valor viaja como f32 y se serializa
+        // a f64, así que la igualdad exacta no aplica.
+        assert!((body["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6);
+        assert!((body["top_p"].as_f64().unwrap() - 0.8).abs() < 1e-6);
         assert_eq!(body["stop"][0], "FIN");
     }
 

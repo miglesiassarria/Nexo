@@ -9,7 +9,7 @@ use crate::provider::{
     ToolChoice, ToolDef, UsageReport,
 };
 use crate::util;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 #[derive(Debug, Deserialize)]

@@ -278,7 +278,9 @@ impl Db {
     }
 
     /// Concede acceso y, si la vía es de suscripción, fija a la vez el límite
-    /// obligatorio. No existe forma de conceder lo uno sin lo otro.
+    /// obligatorio. No existe forma de conceder lo uno sin lo otro: es lo que
+    /// hace que los ocho parámetros viajen juntos en lugar de por separado.
+    #[allow(clippy::too_many_arguments)]
     pub fn grant_with_mandatory_limit(
         &self,
         app_id: &str,

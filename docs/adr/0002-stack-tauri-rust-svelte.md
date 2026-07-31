@@ -48,4 +48,25 @@ Método de medición: proceso corriendo 5 minutos sin tráfico para el reposo; 1
 
 ## Mediciones
 
-Pendientes. A completar al cierre de la fase 0 con los resultados del spike de Tauri.
+Primera medición, 2026-07-31, macOS 26.5 en Apple Silicon, binario `--release`.
+
+| Métrica | Objetivo | Medido | |
+| --- | --- | --- | --- |
+| Memoria residente, con el panel abierto | < 150 MB | **114,6 MB** | ✅ |
+| CPU en reposo | < 0,5 % | **0,4 %** | ✅ |
+| Arranque hasta aceptar conexiones | < 1,0 s | **~0,25 s** | ✅ |
+| Tamaño del instalador de macOS | < 25 MB | **4,2 MB** | ✅ |
+| Binario | — | 9,1 MB | |
+
+Pendientes de medir, porque requieren automatizar el ciclo de la ventana o
+generar carga sostenida:
+
+- Memoria residente en reposo **sin ventana**, que es el objetivo que de verdad
+  importa para una aplicación que vive todo el día en la barra de estado.
+- CPU sirviendo un stream, y sobrecoste de latencia p95 del gateway.
+- Tiempo de reapertura del panel tras cerrarlo.
+
+Conclusión provisional: la decisión se confirma. El coste base con panel abierto
+está a la mitad del límite de rechazo y el instalador es seis veces menor que el
+objetivo. Queda cerrar la medición sin ventana antes de dar la fase 0 por
+completa.

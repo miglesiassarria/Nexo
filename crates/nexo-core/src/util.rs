@@ -1,5 +1,4 @@
 use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,9 +21,7 @@ pub fn new_id(prefix: &str) -> String {
 }
 
 pub fn random_bytes(n: usize) -> Vec<u8> {
-    let mut buf = vec![0u8; n];
-    rand::rng().fill_bytes(&mut buf);
-    buf
+    (0..n).map(|_| rand::random::<u8>()).collect()
 }
 
 pub fn b64url(bytes: &[u8]) -> String {

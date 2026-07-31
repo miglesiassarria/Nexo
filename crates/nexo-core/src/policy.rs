@@ -49,6 +49,7 @@ impl RateTracker {
 }
 
 /// Resultado de evaluar las políticas para una petición.
+#[derive(Debug)]
 pub struct PolicyDecision {
     pub grant: Grant,
     /// Límite aplicable y consumo actual, para informar al cliente.

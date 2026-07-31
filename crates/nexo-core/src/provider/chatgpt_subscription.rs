@@ -101,20 +101,24 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
             return Err(classify_http_error(status.as_u16(), retry_after, &text));
         }
 
-        // Una respuesta correcta que no sea SSE significa que la forma del
-        // flujo ha cambiado: es exactamente lo que hay que detectar pronto.
+        // Una respuesta correcta que no sea un stream significa que la forma
+        // del flujo ha cambiado: es lo que hay que detectar pronto.
+        //
+        // Pero el backend de ChatGPT responde con SSE **sin cabecera
+        // `content-type`**, así que ausencia de cabecera no es sospecha: solo
+        // se rechaza cuando el tipo declarado es claramente otra cosa.
         let content_type = resp
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if !content_type.contains("event-stream") {
+        if !is_plausible_stream(&content_type) {
             let text = resp.text().await.unwrap_or_default();
             return Err(AdapterError::SubscriptionPathBroken {
                 provider: PROVIDER.into(),
                 detail: format!(
-                    "se esperaba text/event-stream y llegó «{content_type}». \
+                    "se esperaba un stream de eventos y llegó «{content_type}». \
                      Cuerpo: {}",
                     truncate(&text, 300)
                 ),
@@ -169,6 +173,23 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
             Health::Unknown
         }
     }
+}
+
+/// ¿Puede este `content-type` corresponder a un stream de eventos?
+///
+/// Ausente cuenta como plausible: el backend de ChatGPT no lo envía, y
+/// rechazar por eso descartaría respuestas perfectamente válidas. Solo se
+/// descarta un tipo declarado que sea incompatible con SSE.
+fn is_plausible_stream(content_type: &str) -> bool {
+    let ct = content_type.trim().to_ascii_lowercase();
+    if ct.is_empty() {
+        return true;
+    }
+    if ct.contains("event-stream") {
+        return true;
+    }
+    // `application/json`, `text/html`, … son señal de que ya no hay stream.
+    !(ct.contains("json") || ct.contains("html") || ct.contains("xml") || ct.contains("plain"))
 }
 
 fn classify_http_error(
@@ -248,6 +269,29 @@ mod tests {
     #[test]
     fn server_errors_stay_upstream() {
         assert_eq!(classify_http_error(503, None, "").kind_str(), "upstream");
+    }
+
+    #[test]
+    fn missing_content_type_is_accepted() {
+        // Caso real observado el 2026-07-31: el backend de ChatGPT devuelve SSE
+        // sin cabecera `content-type`. Rechazarlo por eso rompía la vía entera.
+        assert!(is_plausible_stream(""));
+        assert!(is_plausible_stream("   "));
+    }
+
+    #[test]
+    fn event_stream_is_accepted_with_or_without_charset() {
+        assert!(is_plausible_stream("text/event-stream"));
+        assert!(is_plausible_stream("text/event-stream; charset=utf-8"));
+        assert!(is_plausible_stream("TEXT/EVENT-STREAM"));
+    }
+
+    #[test]
+    fn json_or_html_responses_mean_the_route_changed() {
+        assert!(!is_plausible_stream("application/json"));
+        assert!(!is_plausible_stream("application/json; charset=utf-8"));
+        assert!(!is_plausible_stream("text/html"));
+        assert!(!is_plausible_stream("text/plain"));
     }
 
     #[test]

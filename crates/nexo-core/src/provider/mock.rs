@@ -236,7 +236,10 @@ mod tests {
             parameters: serde_json::json!({}),
         }];
         let adapter = MockAdapter::new(Duration::ZERO);
-        let err = adapter.stream(&r, &cred()).await.unwrap_err();
+        let err = match adapter.stream(&r, &cred()).await {
+            Err(e) => e,
+            Ok(_) => panic!("el mock no soporta herramientas: debía rechazar"),
+        };
         assert_eq!(err.http_status(), 422);
     }
 }
