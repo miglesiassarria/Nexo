@@ -6,7 +6,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 
 | # | Título | Estado | Notas |
 | --- | --- | --- | --- |
-| [0001](0001-proveedor-local-lm-studio/spec.md) | Usar los modelos de LM Studio desde Nexo | `spec` | Ollama queda fuera hasta poder verificarlo |
+| [0001](0001-proveedor-local-lm-studio/spec.md) | Usar los modelos de LM Studio desde Nexo | `hecho` | Verificada contra LM Studio 0.4.20. Ollama queda para otra |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 

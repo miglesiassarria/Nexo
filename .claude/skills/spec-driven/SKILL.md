@@ -132,17 +132,24 @@ Ejecuta las tareas en orden. Por cada una:
 2. Ejecuta su verificación. Si falla, arregla; no marca la casilla.
 3. Marca la casilla en `tasks.md`.
 
-Al terminar, ejecuta la verificación completa del repositorio y comprueba **uno
-por uno** los criterios de aceptación de `spec.md`, informando del resultado real.
-Si alguno no se cumple, se dice, no se maquilla.
+Al terminar:
+
+1. Ejecuta la verificación completa del repositorio.
+2. **Genera el artefacto de macOS** con `npm run tauri build`, e informa de la ruta y
+   la hora. Las pruebas verdes no demuestran que la aplicación empaquete, y lo que el
+   usuario instala es el paquete.
+3. Comprueba **uno por uno** los criterios de aceptación de `spec.md`, informando del
+   resultado real. Si alguno no se cumple, se dice, no se maquilla.
 
 ## Verificación del repositorio
 
 ```bash
 cargo test --workspace && cargo clippy --workspace --all-targets && npm run check
+npm run tauri build
 ```
 
-Una especificación no está terminada mientras esto no pase.
+Una especificación no está terminada mientras esto no pase **y** el artefacto de
+macOS no esté reconstruido.
 
 ## Cuándo saltarse el ciclo
 

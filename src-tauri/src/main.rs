@@ -40,6 +40,10 @@ fn main() {
             commands::connect_chatgpt,
             commands::connect_api_key,
             commands::disconnect_account,
+            commands::detect_lmstudio,
+            commands::lmstudio_status,
+            commands::set_lmstudio_url,
+            commands::lmstudio_models,
             commands::list_apps,
             commands::create_app,
             commands::revoke_app,
@@ -93,6 +97,24 @@ fn main() {
 
             // El catálogo del proveedor se pide al arrancar, sin bloquear: si
             // falla, queda el manifiesto local y el usuario puede reintentarlo.
+            // LM Studio se busca al arrancar: si está abierto, aparece solo.
+            let local_nexo = nexo.clone();
+            tauri::async_runtime::spawn(async move {
+                match local_nexo.detect_lmstudio().await {
+                    Ok(status) if status.reachable => tracing::info!(
+                        models = status.models,
+                        "LM Studio disponible en {}",
+                        status.base_url
+                    ),
+                    Ok(status) => tracing::debug!(
+                        detail = ?status.detail,
+                        "LM Studio no disponible en {}",
+                        status.base_url
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "fallo detectando LM Studio"),
+                }
+            });
+
             let catalog_nexo = nexo.clone();
             tauri::async_runtime::spawn(async move {
                 for result in catalog_nexo.refresh_catalog_from_providers().await {

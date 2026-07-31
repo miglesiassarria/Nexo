@@ -81,8 +81,15 @@ OpenAI. Se incluye explícitamente porque varias herramientas de desarrollo
 relevantes hablan el formato nativo de Anthropic y no el de OpenAI, lo que afecta
 a la superficie que Nexo debe exponer.
 
-**Modelos locales** (Ollama, MLX, llama.cpp) son adaptadores como cualquier otro,
-con el mismo catálogo, permisos y métricas, y contabilidad local.
+**Modelos locales.** **LM Studio** ya está integrado: se detecta solo en
+`127.0.0.1:1234`, descubre su catálogo por su endpoint nativo con tipo, cuantización
+y estado de carga, y sirve el chat por su superficie compatible. Informa de tokens,
+así que su observabilidad es mejor que la de la vía de suscripción. **Ollama** queda
+pendiente, y entrará como otro proveedor distinto, no como una variante de este:
+son dos servidores con endpoints y metadatos propios.
+
+Un modelo que solo hace embeddings se lista marcado como tal y rechaza el chat con
+un error explícito, en aplicación de la regla de no degradar en silencio.
 
 ## Características
 

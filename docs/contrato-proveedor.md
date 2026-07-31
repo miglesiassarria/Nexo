@@ -206,6 +206,22 @@ Aplican a todo adaptador con `CredentialKind::SubscriptionOauth`:
 5. El adaptador se identifica honestamente ante el proveedor cuando el flujo lo permita.
 6. El router debe poder caer al adaptador `ApiKey` del mismo proveedor cuando exista y el usuario lo haya configurado.
 
+## El contrato, puesto a prueba
+
+Cuando se añadió LM Studio (`specs/0001-proveedor-local-lm-studio/`) el contrato
+aguantó: entró un adaptador nuevo **sin tocar el router, el catálogo, las políticas
+ni el motor de estadísticas**. Dos señales de que el modelo estaba bien planteado:
+
+- Un modelo que solo hace embeddings se declara con `text: false`, y con eso
+  `check_capabilities` ya rechaza el chat con `422` sin una línea de código nueva.
+- La dirección de un servidor local cabe en `external_id` de la credencial, sin
+  inventar un canal aparte: para un proveedor local, de dónde viene la autorización
+  *es* su dirección.
+
+Lo único que hubo que hacer fue **extraer** la traducción de `chat/completions` a un
+módulo compartido, porque LM Studio y la API de OpenAI hablan lo mismo. Eso es
+refactor por reutilización, no una grieta del contrato.
+
 ## Pruebas de contrato
 
 Toda implementación del trait pasa la misma batería, ejecutada primero contra el proveedor mock y luego contra cada adaptador real:

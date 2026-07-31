@@ -5,6 +5,7 @@
 //! capacidades, límites y contabilidad distintos según cómo se autenticó.
 
 pub mod chatgpt_subscription;
+pub mod lmstudio;
 pub mod mock;
 pub mod openai_apikey;
 

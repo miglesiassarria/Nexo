@@ -5,6 +5,7 @@
     formatTime,
     kindLabel,
     type Account,
+    type LmStudioStatus,
     type RiskNotice,
   } from "../api";
 
@@ -21,6 +22,52 @@
 
   let apiKey = $state("");
   let apiKeyLabel = $state("");
+
+  let lmstudio = $state<LmStudioStatus | null>(null);
+  let lmstudioUrl = $state("");
+  let checkingLmstudio = $state(false);
+
+  async function loadLmstudio() {
+    try {
+      lmstudio = await api.lmstudioStatus();
+      if (!lmstudioUrl) lmstudioUrl = lmstudio.base_url;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  async function detectLmstudio() {
+    checkingLmstudio = true;
+    error = null;
+    info = null;
+    try {
+      lmstudio = await api.detectLmstudio();
+      info = lmstudio.reachable
+        ? `LM Studio conectado: ${lmstudio.models} modelo(s), ${lmstudio.loaded} cargado(s).`
+        : null;
+      await load();
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      checkingLmstudio = false;
+    }
+  }
+
+  async function saveLmstudioUrl() {
+    checkingLmstudio = true;
+    error = null;
+    try {
+      lmstudio = await api.setLmstudioUrl(lmstudioUrl);
+      lmstudioUrl = lmstudio.base_url;
+      await load();
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      checkingLmstudio = false;
+    }
+  }
 
   async function load() {
     try {
@@ -82,8 +129,13 @@
   );
   const keys = $derived(accounts.filter((a) => a.credential_kind === "api_key"));
 
+  const localAccounts = $derived(
+    accounts.filter((a) => a.credential_kind === "local"),
+  );
+
   $effect(() => {
     load();
+    loadLmstudio();
   });
 </script>
 
@@ -146,6 +198,57 @@
   </section>
 
   <section class="card stack">
+    <div class="row" style="justify-content: space-between">
+      <div>
+        <h2>LM Studio</h2>
+        <p class="muted">
+          Modelos que corren en tu equipo. Nada sale de la máquina y no hay coste
+          por token.
+        </p>
+      </div>
+      <div class="row">
+        {#if lmstudio?.reachable}
+          <span class="badge ok">
+            {lmstudio.models} modelo(s) · {lmstudio.loaded} cargado(s)
+          </span>
+        {:else}
+          <span class="badge warn">No detectado</span>
+        {/if}
+        <button onclick={detectLmstudio} disabled={checkingLmstudio}>
+          {checkingLmstudio ? "Comprobando…" : "Comprobar ahora"}
+        </button>
+      </div>
+    </div>
+
+    {#if lmstudio && !lmstudio.reachable}
+      <div class="notice warn">
+        {lmstudio.detail ?? "No responde."} Abre LM Studio y activa su servidor
+        local; Nexo lo detecta al arrancar y cuando pulses «Comprobar ahora».
+      </div>
+    {/if}
+
+    {#each localAccounts as account (account.id)}
+      {@render accountRow(account)}
+    {/each}
+
+    <div class="key-form">
+      <div>
+        <label for="lmsurl">Dirección del servidor</label>
+        <input id="lmsurl" bind:value={lmstudioUrl} placeholder="http://127.0.0.1:1234" />
+      </div>
+      <div></div>
+      <button onclick={saveLmstudioUrl} disabled={checkingLmstudio || !lmstudioUrl.trim()}>
+        Guardar
+      </button>
+    </div>
+    <p class="muted small">
+      La primera petición a un modelo que no esté cargado puede tardar bastante
+      —unos 14 segundos en las pruebas con un modelo de 12B— porque LM Studio lo
+      carga en ese momento. No es un cuelgue.
+    </p>
+  </section>
+
+  <section class="card stack">
     <div>
       <h2>OpenAI por API key</h2>
       <p class="muted">
@@ -191,6 +294,8 @@
           <span class="badge ok">Activa</span>
         {:else if account.status === "broken"}
           <span class="badge err">Vía rota</span>
+        {:else if account.status === "expired" && account.credential_kind === "local"}
+          <span class="badge warn">Servidor apagado</span>
         {:else}
           <span class="badge warn">{account.status}</span>
         {/if}

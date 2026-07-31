@@ -6,6 +6,7 @@ use nexo_core::apps::{App, Grant, IssuedApp, Limit};
 use nexo_core::config::Settings;
 use nexo_core::db::{Account, CatalogRow};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
+use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
 use nexo_core::provider::CredentialKind;
 use nexo_core::service::{CatalogRefresh, GatewayStatus};
 use nexo_core::util;
@@ -105,6 +106,39 @@ pub fn connect_api_key(
 #[tauri::command]
 pub fn disconnect_account(state: State<'_, AppState>, account_id: String) -> CmdResult<()> {
     state.nexo.disconnect_account(&account_id).map_err(map_err)
+}
+
+// -- Proveedores locales ---------------------------------------------------
+
+/// Busca LM Studio y lo conecta si responde como tal.
+#[tauri::command]
+pub async fn detect_lmstudio(state: State<'_, AppState>) -> CmdResult<LmStudioStatus> {
+    let nexo = state.nexo.clone();
+    nexo.detect_lmstudio().await.map_err(map_err)
+}
+
+/// Estado actual de LM Studio, sin cambiar nada.
+#[tauri::command]
+pub async fn lmstudio_status(state: State<'_, AppState>) -> CmdResult<LmStudioStatus> {
+    let nexo = state.nexo.clone();
+    Ok(nexo.lmstudio_status().await)
+}
+
+/// Cambia la dirección del servidor local y vuelve a detectarlo.
+#[tauri::command]
+pub async fn set_lmstudio_url(
+    state: State<'_, AppState>,
+    base_url: String,
+) -> CmdResult<LmStudioStatus> {
+    let nexo = state.nexo.clone();
+    nexo.set_lmstudio_url(&base_url).await.map_err(map_err)
+}
+
+/// Cuantización, arquitectura y estado de carga de los modelos locales.
+#[tauri::command]
+pub async fn lmstudio_models(state: State<'_, AppState>) -> CmdResult<Vec<LocalModelDetail>> {
+    let nexo = state.nexo.clone();
+    Ok(nexo.lmstudio_model_details().await)
 }
 
 // -- Aplicaciones ----------------------------------------------------------

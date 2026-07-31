@@ -22,6 +22,8 @@ pub struct Settings {
     /// Versión de cliente que se declara al pedir el catálogo de la vía de
     /// suscripción. Subirla expone familias de modelos más nuevas.
     pub codex_client_version: String,
+    /// Dirección del servidor local de LM Studio.
+    pub lmstudio_base_url: String,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             log_level: "info".into(),
             manifest_version: crate::catalog::MANIFEST_VERSION.into(),
             codex_client_version: crate::auth::chatgpt::DEFAULT_CLIENT_VERSION.into(),
+            lmstudio_base_url: crate::provider::lmstudio::DEFAULT_BASE_URL.into(),
         }
     }
 }

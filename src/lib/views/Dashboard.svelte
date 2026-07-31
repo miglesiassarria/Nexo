@@ -2,8 +2,9 @@
   import {
     api,
     catalogReason,
+    costCellLabel,
     costHint,
-    costLabel,
+    localCostHint,
     errorText,
     formatMicros,
     formatMs,
@@ -160,7 +161,9 @@
                   {/if}
                 </td>
                 <td>
-                  {#if b.subscription_requests === b.requests}
+                  {#if group === "credential" && (b.bucket === "local" || b.bucket === "mock")}
+                    <span title={localCostHint()}>Local</span>
+                  {:else if b.subscription_requests === b.requests}
                     <span title={costHint("subscription")}>Suscripción</span>
                   {:else if b.cost_estimated_micros > 0}
                     <span title={costHint("estimated")}>
@@ -250,8 +253,12 @@
                     <span class="muted" title="El proveedor no informa">?</span>
                   {/if}
                 </td>
-                <td title={costHint(r.cost_basis)}>
-                  {costLabel(r.cost_basis, r.cost_micros)}
+                <td
+                  title={r.credential_kind === "local" || r.credential_kind === "mock"
+                    ? localCostHint()
+                    : costHint(r.cost_basis)}
+                >
+                  {costCellLabel(r.credential_kind, r.cost_basis, r.cost_micros)}
                 </td>
               </tr>
             {/each}

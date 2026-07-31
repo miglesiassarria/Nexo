@@ -68,7 +68,13 @@ estaría mal.
   funciona sobre `accounts`. Meter una segunda forma de existir para los proveedores
   locales duplicaría la interfaz y las comprobaciones de `models_for_app`.
 - **Consecuencia:** `resolve_credential` devuelve un secreto vacío para `Local`, que
-  es lo que ya hacía. No hay cambios en el gestor de identidad.
+  es lo que ya hacía.
+- **Corregido durante `/build`:** la dirección del servidor vive en `external_id` de
+  la cuenta y **el adaptador la lee en cada petición**, no al construirse. Esto salió
+  de una prueba que fallaba: con la dirección fijada al arrancar, cambiarla no surtía
+  efecto hasta reiniciar, y `resolve_credential` además descartaba `external_id` para
+  las vías locales. Dos defectos que la prueba de «servidor apagado» destapó de
+  golpe. Ahora cambiar la dirección se aplica al instante.
 
 ### D4. El coste local es cero **conocido**, y no se muestra como una cifra
 
@@ -93,6 +99,17 @@ estaría mal.
 - **Consecuencia:** si LM Studio cambiara ese endpoint, la detección fallaría y el
   usuario podría añadir la dirección a mano; el chat seguiría funcionando porque va
   por la superficie compatible.
+
+### D7. La cuenta es la fuente de verdad sobre dónde está el servidor
+
+- **Decisión:** el adaptador toma la dirección de `cred.external_id` en cada llamada,
+  y solo usa la configurada al construirse como respaldo.
+- **Alternativa descartada:** reconstruir el adaptador al cambiar el ajuste, o pedir
+  al usuario que reinicie. Se descarta porque «guardado, reinicia para aplicar» es una
+  respuesta pobre para editar un número de puerto.
+- **Consecuencia:** el contrato de proveedor no necesita un canal nuevo. La credencial
+  ya lleva de dónde viene la autorización; para un servidor local, eso *es* su
+  dirección.
 
 ### D6. Sin tiempo máximo en la primera petición
 
@@ -127,14 +144,33 @@ Lo que sí hay que actualizar al terminar es `docs/producto.md`, donde los model
 locales figuran como algo por hacer, y `docs/contrato-proveedor.md`, para dejar
 constancia de que un tercer adaptador entró sin tocar el núcleo.
 
-## Qué queda pendiente de descubrir
+## Lo que se descubrió preguntando (T0, 2026-07-31, LM Studio 0.4.20)
 
-- **Cuánto tarda de verdad la primera petición** a un modelo `not-loaded` de 35B en
-  esta máquina. Solo se sabe probando.
-- **Si LM Studio informa de `usage`** en su respuesta compatible con OpenAI. Si lo
-  hace, los tokens serán `reported`; si no, `unavailable`. No se asume ninguna de las
-  dos: se mira.
-- **Si el streaming de LM Studio manda el chunk de `usage`** al final, como pide
-  `stream_options.include_usage`, o lo ignora.
-- **Si `capabilities: ["tool_use"]`** aparece en todos los modelos o solo en algunos,
-  y qué otros valores admite ese campo.
+Medido contra el servidor real antes de escribir el adaptador, no supuesto.
+
+| Pregunta | Respuesta medida |
+| --- | --- |
+| Primera petición a un modelo `not-loaded` (Gemma 4 12B, MLX 8bit) | **~14 s**. LM Studio lo carga en ese momento |
+| Con el modelo ya cargado | **0,34 s** |
+| ¿Devuelve `usage` en no-streaming? | **Sí**: `prompt_tokens`, `completion_tokens`, `total_tokens` y `completion_tokens_details.reasoning_tokens` |
+| ¿Respeta `stream_options.include_usage`? | **Sí**, con el chunk de uso al final del stream |
+| ¿Emite `[DONE]` y `finish_reason`? | Ambos, en la forma estándar |
+| Campos extra | `stats` (vacío en las pruebas) y `system_fingerprint`, ambos ignorables |
+
+Tres consecuencias:
+
+1. **Los tokens locales serán `UsageSource::Reported`**, no estimados. La vía local
+   tiene mejor observabilidad que la de suscripción de ChatGPT, que no informa de
+   cuota.
+2. **La superficie compatible de LM Studio es fiel a la que ya traduce Nexo.** No
+   hace falta ninguna traducción propia: T1 (extraer el módulo compartido) es
+   suficiente y el adaptador queda fino.
+3. **Los 14 segundos de la primera petición confirman D6.** Un timeout de 10 s, que
+   habría parecido generoso, cortaría todas las primeras peticiones. Hay que decírselo
+   al usuario en la interfaz en lugar de dejarle pensar que se ha colgado.
+
+### Todavía sin verificar
+
+- Si `capabilities: ["tool_use"]` aparece en todos los modelos o solo en algunos, y
+  qué otros valores admite. Se trata como lista abierta: si contiene `tool_use`, hay
+  herramientas; si no está, no se prometen.

@@ -84,7 +84,10 @@ Dos spikes de código, no documentos.
 
 ### Fase 4 — Más proveedores
 
-- [ ] Ollama, y después MLX y llama.cpp.
+- [x] LM Studio, con detección automática y catálogo descubierto
+      ([spec 0001](specs/0001-proveedor-local-lm-studio/spec.md)).
+- [ ] Ollama, como proveedor propio y no como variante de LM Studio.
+- [ ] `/v1/embeddings`: los modelos ya se listan, pero la superficie no existe.
 - [ ] Google Gemini con OAuth de API y con API key.
 - [ ] Anthropic por API key y, tras su propia investigación, por OAuth de
       suscripción. El flujo de Anthropic no se deriva del de OpenAI.
@@ -116,14 +119,14 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 | 1 | Instalarlo y ejecutarlo localmente sin desplegar un servidor externo | ✅ |
 | 2 | Autorizar su suscripción de ChatGPT con un único login y usarla después desde cualquier aplicación sin API key | ✅ validado el 2026-07-31 |
 | 3 | Conectar una aplicación compatible con OpenAI usando una URL local y un token de Nexo | ✅ |
-| 4 | Elegir un modelo de varios proveedores sin cambiar la integración del cliente | ⏳ falta un segundo proveedor real |
+| 4 | Elegir un modelo de varios proveedores sin cambiar la integración del cliente | ✅ OpenAI y LM Studio conviven |
 | 5 | Ver qué modelos están disponibles por suscripción y qué modelos exigen API key, sin sorpresas en ejecución | ✅ con el catálogo real del proveedor |
 | 6 | Revocar el acceso de una aplicación sin invalidar las demás | ✅ |
 | 7 | Saber qué proveedor, credencial y modelo atendió cada petición y cuánto tardó | ✅ |
 | 8 | Fijar un límite de uso por aplicación y ver el consumo acumulado | ⏳ límite aplicado; falta mostrar el consumo restante en el panel |
 | 17 | Entender desde el panel por qué un cliente no ve modelos | ✅ |
 | 9 | Desconectar una cuenta y eliminar sus tokens del equipo | ✅ |
-| 10 | Usar modelos locales cuando no quiera enviar datos a un proveedor cloud | ⬜ fase 4 |
+| 10 | Usar modelos locales cuando no quiera enviar datos a un proveedor cloud | ✅ con LM Studio |
 | 11 | Consultar el uso por aplicación, proveedor, credencial, modelo y periodo | ✅ |
 | 12 | Comparar consumo, latencia y errores sin confundir un dato reportado, una estimación, un consumo cubierto por suscripción y un dato no disponible | ✅ |
 | 13 | Recibir un error comprensible, y el respaldo por API key si lo configuró, cuando la vía de suscripción deje de funcionar | ✅ |

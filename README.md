@@ -11,6 +11,7 @@ Su razón de ser es usar la **suscripción que ya pagas** —empezando por ChatG
 ```text
 Tus aplicaciones  ──►  Nexo (localhost)  ──►  ChatGPT por suscripción
                           │                    OpenAI por API key
+                          │                    LM Studio, en tu equipo
                           └── SQLite local: uso, latencia, errores, coste
 ```
 
@@ -33,6 +34,7 @@ Primera versión funcional. Lo que hay hoy:
 | Catálogo descubierto del proveedor, no clavado a mano | ✅ |
 | Estadísticas locales y panel | ✅ |
 | Icono en la barra de estado, cierre sin parar el gateway | ✅ |
+| Modelos locales con LM Studio, detectado solo | ✅ **verificado** contra LM Studio 0.4.20 |
 | Google Gemini, Anthropic, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
 
 ## Requisitos
@@ -117,6 +119,8 @@ Dos reglas que hacen que esto sirva de algo:
 - **Lo que se descubre vuelve al documento.** Si al implementar resulta que la
   especificación estaba equivocada, se corrige y se anota qué se aprendió. Ya ha
   pasado tres veces en este proyecto.
+- **Toda implementación acaba con el artefacto de macOS reconstruido.** Las pruebas
+  verdes no demuestran que la aplicación empaquete, y lo que se instala es el paquete.
 
 Las especificaciones viven en [`specs/`](specs/), la metodología completa en
 [`.claude/skills/spec-driven/SKILL.md`](.claude/skills/spec-driven/SKILL.md), y las

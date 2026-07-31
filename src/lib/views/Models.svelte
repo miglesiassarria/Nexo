@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { api, errorText, kindLabel, type CatalogRow } from "../api";
+  import {
+    api,
+    errorText,
+    kindLabel,
+    type CatalogRow,
+    type LocalModelDetail,
+  } from "../api";
 
   let rows = $state<CatalogRow[]>([]);
+  let localDetails = $state<Record<string, LocalModelDetail>>({});
   let error = $state<string | null>(null);
   let info = $state<string | null>(null);
   let refreshing = $state(false);
@@ -10,6 +17,10 @@
     try {
       rows = await api.catalog();
       error = null;
+      // Cuantización y estado de carga no caben en el contrato común de
+      // proveedor: se piden aparte, solo para mostrarlos.
+      const details = await api.lmstudioModels();
+      localDetails = Object.fromEntries(details.map((d) => [d.api_id, d]));
     } catch (e) {
       error = errorText(e);
     }
@@ -82,6 +93,7 @@
             <th>Contexto</th>
             <th>Salida máx.</th>
             <th>Capacidades</th>
+            <th>Local</th>
             <th>Precio</th>
           </tr>
         </thead>
@@ -119,6 +131,24 @@
                     {/if}
                   {/each}
                 </div>
+              </td>
+              <td>
+                {#if localDetails[row.api_id]}
+                  {@const d = localDetails[row.api_id]}
+                  <div class="row" style="gap: 0.25rem; flex-wrap: wrap">
+                    {#if d.loaded}
+                      <span class="badge ok" title="Listo para responder">cargado</span>
+                    {:else}
+                      <span class="badge" title="Se cargará en la primera petición">
+                        sin cargar
+                      </span>
+                    {/if}
+                    {#if d.quantization}<span class="badge">{d.quantization}</span>{/if}
+                    {#if d.runtime}<span class="badge">{d.runtime}</span>{/if}
+                  </div>
+                {:else}
+                  <span class="muted">—</span>
+                {/if}
               </td>
               <td>
                 {#if row.price_input === null}

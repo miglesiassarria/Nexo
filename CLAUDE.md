@@ -25,6 +25,22 @@ Nada se considera terminado sin que esto pase, ejecutado de verdad:
 cargo test --workspace && cargo clippy --workspace --all-targets && npm run check
 ```
 
+**Y sin generar el artefacto de macOS:**
+
+```bash
+npm run tauri build
+```
+
+Toda implementación termina con `Nexo.app` y el `.dmg` reconstruidos en
+`target/release/bundle/`, e informando de la ruta y la hora del build. Que las
+pruebas pasen no demuestra que la aplicación compile y empaquete: son dos cosas
+distintas, y la que el usuario instala es la segunda. Si el build falla o se salta,
+se dice; no se da por terminado.
+
+Recordatorio de fontanería: construir solo el DMG (`--bundles dmg`) **borra** el
+`Nexo.app` existente, y el empaquetado falla si queda un volumen `Nexo` montado o un
+`rw.*.dmg` de un intento anterior. Pide los dos en la misma orden.
+
 Informa siempre del resultado real. Si una prueba falla, dilo con su salida. Si un
 criterio de aceptación no se cumple, dilo en lugar de maquillarlo.
 

@@ -9,8 +9,9 @@ use crate::error::{CoreError, Result};
 use crate::gateway::wire::WireChatRequest;
 use crate::policy::PolicyEngine;
 use crate::provider::{
-    chatgpt_subscription::ChatgptSubscriptionAdapter, mock::MockAdapter,
-    openai_apikey::OpenAiApiKeyAdapter, Accounting, AdapterError, AdapterId, ChatEvent,
+    chatgpt_subscription::ChatgptSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
+    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, Accounting, AdapterError, AdapterId,
+    ChatEvent,
     ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
     ResolvedCredential, UsageReport, UsageSource,
 };
@@ -48,10 +49,9 @@ impl Nexo {
             .connect_timeout(std::time::Duration::from_secs(15))
             .build()?;
 
-        let client_version = db
-            .settings()
-            .map(|s| s.codex_client_version)
-            .unwrap_or_else(|_| chatgpt::DEFAULT_CLIENT_VERSION.to_string());
+        let settings = db.settings().unwrap_or_default();
+        let client_version = settings.codex_client_version.clone();
+        let lmstudio_url = settings.lmstudio_base_url.clone();
 
         let mut adapters: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
         for adapter in [
@@ -60,6 +60,7 @@ impl Nexo {
                 client_version,
             )) as Arc<dyn ProviderAdapter>,
             Arc::new(OpenAiApiKeyAdapter::new(http.clone())),
+            Arc::new(LmStudioAdapter::new(http.clone(), lmstudio_url)),
             Arc::new(MockAdapter::default()),
         ] {
             adapters.insert(adapter.id().slug(), adapter);
@@ -217,6 +218,109 @@ impl Nexo {
         }
 
         out
+    }
+
+    // -- Proveedores locales -------------------------------------------------
+
+    /// Busca LM Studio en la dirección configurada y, si es él, lo deja conectado.
+    ///
+    /// Confirma la forma de su respuesta, no solo que algo contesta: el puerto por
+    /// defecto lo usa más de un programa y dar por bueno cualquier `200` acabaría
+    /// ofreciendo el catálogo de otro producto.
+    pub async fn detect_lmstudio(&self) -> Result<lmstudio::LmStudioStatus> {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.lmstudio_base_url)
+            .unwrap_or_else(|_| lmstudio::DEFAULT_BASE_URL.to_string());
+
+        let status = lmstudio::probe(&self.http, &base_url).await;
+
+        if !status.reachable {
+            // No se borra la cuenta: que LM Studio esté cerrado ahora no significa
+            // que el usuario ya no lo use. Se marca y la interfaz lo explica.
+            if let Some(account) = self
+                .db
+                .account_for(lmstudio::PROVIDER, CredentialKind::Local)?
+            {
+                let _ = self.db.set_account_status(&account.id, "expired");
+            }
+            return Ok(status);
+        }
+
+        let account = Account {
+            id: util::new_id("acc"),
+            provider_id: lmstudio::PROVIDER.to_string(),
+            credential_kind: CredentialKind::Local,
+            label: format!("LM Studio ({})", status.base_url),
+            // Sin credencial: no hay nada que guardar en el almacén seguro.
+            keychain_ref: None,
+            external_id: Some(status.base_url.clone()),
+            scopes: None,
+            expires_at: None,
+            status: "active".into(),
+            risk_ack_at: None,
+            created_at: util::now_ms(),
+            last_used_at: None,
+        };
+        self.db.upsert_account(&account)?;
+
+        for result in self.refresh_catalog_from_providers().await {
+            if result.provider_id == lmstudio::PROVIDER {
+                if let Some(error) = &result.error {
+                    tracing::warn!(%error, "LM Studio responde pero su catálogo falló");
+                }
+            }
+        }
+
+        tracing::info!(
+            base_url = %status.base_url,
+            models = status.models,
+            loaded = status.loaded,
+            "LM Studio detectado"
+        );
+        Ok(status)
+    }
+
+    /// Cambia la dirección de LM Studio y vuelve a detectarlo.
+    ///
+    /// Reconstruir el adaptador exige rearrancar, así que se guarda el ajuste y se
+    /// avisa. Mentir diciendo que ya está aplicado sería peor.
+    pub async fn set_lmstudio_url(&self, base_url: &str) -> Result<lmstudio::LmStudioStatus> {
+        let mut settings = self.db.settings()?;
+        settings.lmstudio_base_url = base_url.trim().to_string();
+        self.db.save_settings(&settings)?;
+        self.detect_lmstudio().await
+    }
+
+    /// Estado actual, sin tocar la configuración.
+    pub async fn lmstudio_status(&self) -> lmstudio::LmStudioStatus {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.lmstudio_base_url)
+            .unwrap_or_else(|_| lmstudio::DEFAULT_BASE_URL.to_string());
+        lmstudio::probe(&self.http, &base_url).await
+    }
+
+    /// Detalles de presentación de los modelos locales: cuantización y carga.
+    pub async fn lmstudio_model_details(&self) -> Vec<lmstudio::LocalModelDetail> {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.lmstudio_base_url)
+            .unwrap_or_else(|_| lmstudio::DEFAULT_BASE_URL.to_string());
+        let url = format!(
+            "{}/api/v0/models",
+            base_url.trim_end_matches('/').trim_end_matches("/v1")
+        );
+        match self.http.get(url).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+                Ok(body) => lmstudio::parse_details(&body),
+                Err(_) => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
     }
 
     // -- OAuth --------------------------------------------------------------
@@ -388,7 +492,10 @@ impl Nexo {
                 account_id: account.id.clone(),
                 kind: account.credential_kind,
                 secret: String::new(),
-                external_id: None,
+                // Para un proveedor local, `external_id` es la dirección de su
+                // servidor. Descartarla dejaba al adaptador usando la que leyó al
+                // arrancar, así que cambiar la dirección no surtía efecto.
+                external_id: account.external_id.clone(),
             }),
             CredentialKind::ApiKey => {
                 let secret = self
@@ -1103,6 +1210,41 @@ mod tests {
             Arc::new(MemorySecretStore::default()),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn lmstudio_setting_roundtrips_with_a_sane_default() {
+        let n = nexo();
+        let s = n.db().settings().unwrap();
+        assert_eq!(s.lmstudio_base_url, crate::provider::lmstudio::DEFAULT_BASE_URL);
+
+        let mut changed = s.clone();
+        changed.lmstudio_base_url = "http://localhost:4321".into();
+        n.db().save_settings(&changed).unwrap();
+        assert_eq!(
+            n.db().settings().unwrap().lmstudio_base_url,
+            "http://localhost:4321"
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_lmstudio_rejects_an_address_that_is_not_lm_studio() {
+        let n = nexo();
+        let mut s = n.db().settings().unwrap();
+        // Puerto cerrado: no hay LM Studio ahí.
+        s.lmstudio_base_url = "http://127.0.0.1:1".into();
+        n.db().save_settings(&s).unwrap();
+
+        let status = n.detect_lmstudio().await.unwrap();
+        assert!(!status.reachable);
+        assert!(status.detail.is_some(), "hay que decir por qué no se conectó");
+        assert!(
+            n.db()
+                .account_for("lmstudio", CredentialKind::Local)
+                .unwrap()
+                .is_none(),
+            "no se crea cuenta para algo que no es LM Studio"
+        );
     }
 
     #[test]

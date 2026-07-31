@@ -132,6 +132,23 @@ export interface RequestRow {
   operation: string;
 }
 
+export interface LmStudioStatus {
+  base_url: string;
+  reachable: boolean;
+  models: number;
+  loaded: number;
+  detail: string | null;
+}
+
+export interface LocalModelDetail {
+  api_id: string;
+  kind: string;
+  quantization: string | null;
+  arch: string | null;
+  runtime: string | null;
+  loaded: boolean;
+}
+
 export interface CatalogRefresh {
   provider_id: string;
   credential_kind: string;
@@ -167,6 +184,12 @@ export const api = {
     invoke<Account>("connect_api_key", { apiKey, label }),
   disconnectAccount: (accountId: string) =>
     invoke<void>("disconnect_account", { accountId }),
+
+  lmstudioStatus: () => invoke<LmStudioStatus>("lmstudio_status"),
+  detectLmstudio: () => invoke<LmStudioStatus>("detect_lmstudio"),
+  setLmstudioUrl: (baseUrl: string) =>
+    invoke<LmStudioStatus>("set_lmstudio_url", { baseUrl }),
+  lmstudioModels: () => invoke<LocalModelDetail[]>("lmstudio_models"),
 
   listApps: () => invoke<App[]>("list_apps"),
   createApp: (name: string, notes?: string) =>
@@ -219,6 +242,19 @@ export function kindLabel(kind: string): string {
 }
 
 /**
+ * Coste de una fila del panel. Lo local se muestra como «Local», no como
+ * «0.0000 $»: el coste es cero y conocido, pero una cifra ahí es ruido.
+ */
+export function costCellLabel(
+  credentialKind: string,
+  basis: CostBasis,
+  micros: number | null,
+): string {
+  if (credentialKind === "local" || credentialKind === "mock") return "Local";
+  return costLabel(basis, micros);
+}
+
+/**
  * Coste legible. El caso `subscription` no se muestra como «0 €» a secas:
  * el coste marginal es cero pero la cuota consumida es desconocida, y
  * confundirlos sería exactamente lo que el producto promete no hacer.
@@ -247,6 +283,10 @@ export function costHint(basis: CostBasis): string {
     case "unavailable":
       return "El proveedor no informa y Nexo no puede estimarlo con fiabilidad.";
   }
+}
+
+export function localCostHint(): string {
+  return "Se ejecuta en tu equipo: coste cero y conocido, sin cuota de ningún proveedor.";
 }
 
 export function formatMicros(micros: number): string {

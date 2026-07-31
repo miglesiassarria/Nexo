@@ -2,3 +2,4 @@
 //! formato concreto de cada API, en petición y en stream de respuesta.
 
 pub mod responses;
+pub mod chat_completions;

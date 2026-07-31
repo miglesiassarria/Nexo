@@ -61,6 +61,7 @@ impl Db {
                 "log_level" => settings.log_level = value,
                 "manifest_version" => settings.manifest_version = value,
                 "codex_client_version" => settings.codex_client_version = value,
+                "lmstudio_base_url" => settings.lmstudio_base_url = value,
                 _ => {}
             }
         }
@@ -78,6 +79,7 @@ impl Db {
             ("log_level", s.log_level.clone()),
             ("manifest_version", s.manifest_version.clone()),
             ("codex_client_version", s.codex_client_version.clone()),
+            ("lmstudio_base_url", s.lmstudio_base_url.clone()),
         ] {
             conn.execute(
                 "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)

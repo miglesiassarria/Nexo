@@ -464,3 +464,343 @@ async fn catalog_queries_do_not_consume_the_app_limit() {
         "el límite es de inferencia, no de consultas de catálogo"
     );
 }
+
+// ---------------------------------------------------------------------------
+// LM Studio real. Marcadas `#[ignore]` porque exigen tenerlo abierto:
+//   cargo test -p nexo-core --test gateway_e2e -- --ignored lmstudio
+// ---------------------------------------------------------------------------
+
+/// Monta un Nexo con LM Studio detectado y una aplicación con acceso local.
+///
+/// Devuelve `None` si LM Studio no está en marcha, para que la prueba se salte de
+/// forma explícita en lugar de fallar por algo que no es un defecto del código.
+async fn start_with_lmstudio() -> Option<Harness> {
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    let status = nexo.detect_lmstudio().await.expect("detección");
+    if !status.reachable {
+        eprintln!("LM Studio no está en marcha ({:?}); prueba omitida", status.detail);
+        return None;
+    }
+
+    let issued = nexo.db().create_app("prueba-local", None).expect("app");
+    // Sin límite a propósito: la vía local no debe exigirlo (criterio 9).
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "lmstudio".into(),
+                credential_kind: "local".into(),
+                model_pattern: "*".into(),
+                allow_tools: true,
+                allow_multimodal: true,
+                log_content: false,
+            },
+        )
+        .expect("grant");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Some(Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http: reqwest::Client::new(),
+    })
+}
+
+/// Primer modelo del catálogo local que sirva para chat.
+fn first_chat_model(h: &Harness) -> Option<String> {
+    h.nexo
+        .db()
+        .catalog_rows()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.provider_id == "lmstudio" && r.caps.text)
+        .map(|r| r.public_name)
+}
+
+#[tokio::test]
+#[ignore = "necesita LM Studio en marcha"]
+async fn lmstudio_models_appear_with_the_local_route() {
+    let Some(h) = start_with_lmstudio().await else { return };
+
+    let body: Value = h
+        .http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let locals: Vec<&Value> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["nexo"]["provider"] == "lmstudio")
+        .collect();
+
+    assert!(!locals.is_empty(), "el catálogo local debe aparecer");
+    for m in &locals {
+        assert_eq!(m["nexo"]["credential_kind"], "local");
+        assert_eq!(m["nexo"]["accounting"], "local");
+        assert_eq!(m["nexo"]["priced"], false, "lo local no cuesta por token");
+        assert!(m["id"].as_str().unwrap().starts_with("lmstudio/"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "necesita LM Studio en marcha"]
+async fn lmstudio_chat_works_and_is_recorded_without_a_limit() {
+    let Some(h) = start_with_lmstudio().await else { return };
+    let Some(model) = first_chat_model(&h) else {
+        eprintln!("no hay modelo de chat local; prueba omitida");
+        return;
+    };
+
+    let resp = h
+        .post_chat(json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Responde solo: OK"}],
+            "max_tokens": 20
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert!(!body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    // LM Studio informa de tokens: verificado en T0.
+    assert_eq!(body["usage"]["nexo"]["usage_source"], "reported");
+    assert!(body["usage"]["total_tokens"].as_u64().unwrap() > 0);
+
+    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let row = recent
+        .iter()
+        .find(|r| r.operation == "chat")
+        .expect("la petición quedó registrada");
+    assert_eq!(row.status, "ok");
+    assert_eq!(row.credential_kind, "local");
+    assert!(row.latency_ms.is_some());
+    assert!(row.total_tokens.unwrap_or(0) > 0);
+
+    // Criterio 8: lo local no aporta coste estimado.
+    let summary = h
+        .nexo
+        .db()
+        .usage_summary(0, nexo_core::db::stats::GroupBy::CredentialKind, Some("chat"))
+        .unwrap();
+    let local = summary.iter().find(|b| b.bucket == "local").unwrap();
+    assert_eq!(local.cost_estimated_micros, 0);
+    assert_eq!(local.subscription_requests, 0);
+}
+
+#[tokio::test]
+#[ignore = "necesita LM Studio en marcha"]
+async fn lmstudio_streaming_reassembles_to_the_same_text() {
+    let Some(h) = start_with_lmstudio().await else { return };
+    let Some(model) = first_chat_model(&h) else { return };
+
+    let raw = h
+        .post_chat(json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Escribe exactamente: uno dos tres"}],
+            "stream": true,
+            "max_tokens": 30
+        }))
+        .await
+        .text()
+        .await
+        .unwrap();
+
+    assert!(raw.trim_end().ends_with("data: [DONE]"));
+    let chunks = parse_sse(&raw);
+
+    let ids: std::collections::HashSet<&str> =
+        chunks.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(ids.len(), 1, "un solo id para toda la respuesta");
+
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert!(!text.is_empty(), "el texto reensamblado no puede estar vacío");
+
+    let finishes = chunks
+        .iter()
+        .filter(|c| !c["choices"][0]["finish_reason"].is_null())
+        .count();
+    assert_eq!(finishes, 1);
+
+    let usage = chunks
+        .iter()
+        .rev()
+        .find(|c| !c["usage"].is_null())
+        .expect("LM Studio respeta include_usage: verificado en T0");
+    assert_eq!(usage["usage"]["nexo"]["usage_source"], "reported");
+
+    let ttft = h
+        .nexo
+        .db()
+        .recent_requests(5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .and_then(|r| r.ttft_ms);
+    assert!(ttft.is_some(), "hay que medir el tiempo hasta el primer token");
+}
+
+#[tokio::test]
+#[ignore = "necesita LM Studio en marcha"]
+async fn lmstudio_embeddings_model_refuses_chat_with_422() {
+    let Some(h) = start_with_lmstudio().await else { return };
+
+    let embeddings = h
+        .nexo
+        .db()
+        .catalog_rows()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.provider_id == "lmstudio" && r.caps.embeddings);
+    let Some(model) = embeddings else {
+        eprintln!("no hay modelo de embeddings cargado en LM Studio; prueba omitida");
+        return;
+    };
+
+    let resp = h
+        .post_chat(json!({
+            "model": model.public_name,
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+    assert_eq!(resp.status(), 422, "pedir chat a un embeddings se rechaza");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["nexo"]["kind"], "unsupported");
+    assert_eq!(body["error"]["nexo"]["capability"], "text");
+}
+
+#[tokio::test]
+async fn a_local_server_that_is_down_gives_a_useful_error_not_a_generic_502() {
+    // Criterio 7. Se apunta a un puerto muerto en lugar de cerrar el LM Studio del
+    // usuario: es el mismo camino de código y no interfiere con su equipo.
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    // Catálogo local sembrado a mano, como si LM Studio hubiera estado activo antes.
+    nexo.db()
+        .replace_models(
+            "lmstudio",
+            CredentialKind::Local,
+            &[nexo_core::provider::ModelDescriptor {
+                api_id: "modelo-fantasma".into(),
+                public_name: "lmstudio/modelo-fantasma".into(),
+                caps: nexo_core::provider::Capabilities {
+                    text: true,
+                    streaming: true,
+                    ..Default::default()
+                },
+                limits: Default::default(),
+                accounting: nexo_core::provider::Accounting::Local,
+                pricing: None,
+            }],
+            "prueba",
+        )
+        .unwrap();
+
+    // Cuenta local apuntando a un puerto donde no hay nada.
+    nexo.db()
+        .upsert_account(&nexo_core::db::Account {
+            id: "acc-local".into(),
+            provider_id: "lmstudio".into(),
+            credential_kind: CredentialKind::Local,
+            label: "LM Studio apagado".into(),
+            keychain_ref: None,
+            external_id: Some("http://127.0.0.1:1".into()),
+            scopes: None,
+            expires_at: None,
+            status: "active".into(),
+            risk_ack_at: None,
+            created_at: 0,
+            last_used_at: None,
+        })
+        .unwrap();
+
+    let mut settings = nexo.db().settings().unwrap();
+    settings.lmstudio_base_url = "http://127.0.0.1:1".into();
+    nexo.db().save_settings(&settings).unwrap();
+
+    let issued = nexo.db().create_app("cliente", None).unwrap();
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "lmstudio".into(),
+                credential_kind: "local".into(),
+                model_pattern: "*".into(),
+                allow_tools: false,
+                allow_multimodal: false,
+                log_content: false,
+            },
+        )
+        .unwrap();
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .bearer_auth(&issued.token)
+        .json(&json!({
+            "model": "lmstudio/modelo-fantasma",
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // 503, no 502: el destino no responde, no es que haya fallado.
+    assert_eq!(resp.status(), 503);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["nexo"]["kind"], "transport");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("127.0.0.1:1"),
+        "el error debe nombrar la dirección: {message}"
+    );
+    assert!(
+        message.contains("abierto"),
+        "el error debe decir qué hacer: {message}"
+    );
+
+    // Y queda registrado, para que el panel pueda explicarlo.
+    let row = nexo
+        .db()
+        .recent_requests(5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .expect("el fallo queda registrado");
+    assert_eq!(row.status, "error");
+    assert_eq!(row.error_kind.as_deref(), Some("transport"));
+    assert_eq!(row.credential_kind, "local");
+}
