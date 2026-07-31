@@ -7,7 +7,7 @@ use nexo_core::config::Settings;
 use nexo_core::db::{Account, CatalogRow};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::CredentialKind;
-use nexo_core::service::GatewayStatus;
+use nexo_core::service::{CatalogRefresh, GatewayStatus};
 use nexo_core::util;
 use serde::Serialize;
 use serde_json::Value;
@@ -199,6 +199,13 @@ pub fn set_app_access(
 #[tauri::command]
 pub fn catalog(state: State<'_, AppState>) -> CmdResult<Vec<CatalogRow>> {
     state.nexo.db().catalog_rows().map_err(map_err)
+}
+
+/// Pregunta a los proveedores conectados qué modelos ofrecen de verdad.
+#[tauri::command]
+pub async fn refresh_catalog(state: State<'_, AppState>) -> CmdResult<Vec<CatalogRefresh>> {
+    let nexo = state.nexo.clone();
+    Ok(nexo.refresh_catalog_from_providers().await)
 }
 
 #[tauri::command]

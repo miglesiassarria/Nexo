@@ -1,10 +1,13 @@
-//! Manifiesto versionado de modelos.
+//! Manifiesto versionado de modelos, usado como RESPALDO.
 //!
-//! Las capacidades de un modelo NO son descubribles mediante las APIs de los
-//! proveedores: solo se puede consultar qué modelos existen, no qué hacen. Por
-//! eso viven aquí, versionadas, y se cruzan con lo que el proveedor anuncie.
+//! Se diseñó asumiendo que las capacidades de un modelo no son descubribles por
+//! API. Eso es cierto para la API pública de OpenAI, pero **no** para la vía de
+//! suscripción: su endpoint de catálogo publica contexto, modalidades y niveles
+//! de razonamiento por modelo (verificado el 2026-07-31).
 //!
-//! Precedencia: anulaciones del usuario > este manifiesto > endpoint de modelos.
+//! Precedencia real: descubrimiento del proveedor > este manifiesto. El
+//! manifiesto solo entra cuando el proveedor no responde, y su lista se queda
+//! obsoleta en cuanto sale una familia nueva.
 
 use crate::provider::{Accounting, Capabilities, Limits, ModelDescriptor, Pricing};
 
@@ -29,11 +32,14 @@ fn caps_full() -> Capabilities {
 /// capacidades recortadas: no hay precios porque no hay coste marginal, y los
 /// modos de razonamiento más costosos quedan fuera.
 ///
-/// VERIFICADO CONTRA UNA CUENTA REAL EL 2026-07-31: los tres modelos
-/// responden por esta vía, con streaming y sin él. A diferencia de lo que se
-/// suponía al diseñarlo, el proveedor **sí** informa de tokens de entrada,
-/// salida, razonamiento y caché. Lo que no expone es la cuota consumida del
-/// plan, así que la contabilidad sigue siendo `Subscription`.
+/// RESPALDO ÚNICAMENTE. En condiciones normales este listado no se usa: el
+/// adaptador descubre el catálogo real del proveedor, que el 2026-07-31 incluía
+/// además la familia `gpt-5.6-{sol,terra,luna}`. Esta lista existe para que Nexo
+/// siga siendo utilizable si el endpoint de catálogo falla.
+///
+/// El proveedor **sí** informa de tokens de entrada, salida, razonamiento y
+/// caché. Lo que no expone es la cuota consumida del plan, así que la
+/// contabilidad sigue siendo `Subscription`.
 pub fn chatgpt_subscription_models() -> Vec<ModelDescriptor> {
     ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
         .into_iter()

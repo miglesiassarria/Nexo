@@ -91,7 +91,9 @@ Dos spikes de código, no documentos.
 - [ ] Superficie compatible con el formato nativo de Anthropic, necesaria para
       herramientas que no hablan `chat/completions`.
 - [ ] Capacidades multimodales de extremo a extremo.
-- [ ] Manifiesto de modelos actualizable sin reinstalar la aplicación.
+- [x] Catálogo descubierto del proveedor en la vía de suscripción, con el
+      manifiesto local como respaldo.
+- [ ] Lo mismo para la vía de API key, cuyo endpoint no publica capacidades.
 
 ### Fase 5 — Distribución
 
@@ -115,7 +117,7 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 | 2 | Autorizar su suscripción de ChatGPT con un único login y usarla después desde cualquier aplicación sin API key | ✅ validado el 2026-07-31 |
 | 3 | Conectar una aplicación compatible con OpenAI usando una URL local y un token de Nexo | ✅ |
 | 4 | Elegir un modelo de varios proveedores sin cambiar la integración del cliente | ⏳ falta un segundo proveedor real |
-| 5 | Ver qué modelos están disponibles por suscripción y qué modelos exigen API key, sin sorpresas en ejecución | ✅ |
+| 5 | Ver qué modelos están disponibles por suscripción y qué modelos exigen API key, sin sorpresas en ejecución | ✅ con el catálogo real del proveedor |
 | 6 | Revocar el acceso de una aplicación sin invalidar las demás | ✅ |
 | 7 | Saber qué proveedor, credencial y modelo atendió cada petición y cuánto tardó | ✅ |
 | 8 | Fijar un límite de uso por aplicación y ver el consumo acumulado | ⏳ límite aplicado; falta mostrar el consumo restante en el panel |

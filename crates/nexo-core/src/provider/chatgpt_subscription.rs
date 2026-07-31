@@ -4,10 +4,9 @@
 //! pueden romperse viven en `crate::auth::chatgpt`, no aquí.
 
 use crate::auth::chatgpt;
-use crate::catalog;
 use crate::provider::{
-    check_capabilities, AdapterError, AdapterId, ChatEvent, ChatRequest, CredentialKind,
-    EventStream, Health, ModelDescriptor, ProviderAdapter, ResolvedCredential,
+    Accounting, AdapterError, AdapterId, Capabilities, ChatEvent, ChatRequest, CredentialKind,
+    EventStream, Health, Limits, ModelDescriptor, ProviderAdapter, ResolvedCredential,
 };
 use crate::translate::responses::{self, Translated};
 use async_trait::async_trait;
@@ -19,16 +18,32 @@ pub const PROVIDER: &str = "openai";
 pub struct ChatgptSubscriptionAdapter {
     http: reqwest::Client,
     endpoint: String,
+    models_endpoint: String,
+    client_version: String,
 }
 
 impl ChatgptSubscriptionAdapter {
     pub fn new(http: reqwest::Client) -> Self {
-        Self { http, endpoint: chatgpt::API_ENDPOINT.to_string() }
+        Self::with_client_version(http, chatgpt::DEFAULT_CLIENT_VERSION)
+    }
+
+    pub fn with_client_version(http: reqwest::Client, client_version: impl Into<String>) -> Self {
+        Self {
+            http,
+            endpoint: chatgpt::API_ENDPOINT.to_string(),
+            models_endpoint: chatgpt::MODELS_ENDPOINT.to_string(),
+            client_version: client_version.into(),
+        }
     }
 
     /// Permite apuntar a un servidor de pruebas sin tocar el módulo frágil.
     pub fn with_endpoint(http: reqwest::Client, endpoint: impl Into<String>) -> Self {
-        Self { http, endpoint: endpoint.into() }
+        Self {
+            http,
+            endpoint: endpoint.into(),
+            models_endpoint: chatgpt::MODELS_ENDPOINT.to_string(),
+            client_version: chatgpt::DEFAULT_CLIENT_VERSION.to_string(),
+        }
     }
 }
 
@@ -38,13 +53,48 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
         AdapterId::new(PROVIDER, CredentialKind::SubscriptionOauth)
     }
 
+    /// Descubre los modelos reales de esta vía.
+    ///
+    /// A diferencia de lo que se supuso al diseñar el producto, esta vía **sí**
+    /// tiene endpoint de catálogo, y devuelve metadatos mejores que cualquier
+    /// manifiesto escrito a mano: contexto, modalidades y niveles de
+    /// razonamiento por modelo. El manifiesto queda solo como respaldo para
+    /// cuando el descubrimiento falle.
     async fn catalog(
         &self,
-        _cred: &ResolvedCredential,
+        cred: &ResolvedCredential,
     ) -> Result<Vec<ModelDescriptor>, AdapterError> {
-        // Esta vía no expone un endpoint de modelos utilizable: el catálogo
-        // sale del manifiesto versionado que se distribuye con Nexo.
-        Ok(catalog::chatgpt_subscription_models())
+        let mut request = self
+            .http
+            .get(&self.models_endpoint)
+            .query(&[("client_version", self.client_version.as_str())])
+            .header("authorization", format!("Bearer {}", cred.secret))
+            .header("originator", chatgpt::ORIGINATOR);
+        if let Some(account) = &cred.external_id {
+            request = request.header("ChatGPT-Account-Id", account.as_str());
+        }
+
+        let resp = request.send().await.map_err(AdapterError::from_reqwest)?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(classify_http_error(status.as_u16(), None, &text));
+        }
+
+        let body: serde_json::Value = resp.json().await.map_err(AdapterError::from_reqwest)?;
+        let models = parse_models(&body);
+
+        if models.is_empty() {
+            return Err(AdapterError::Malformed {
+                detail: format!(
+                    "el catálogo llegó vacío pidiendo client_version={}. \
+                     Prueba a subirlo en Configuración: el proveedor filtra los \
+                     modelos por versión de cliente.",
+                    self.client_version
+                ),
+            });
+        }
+        Ok(models)
     }
 
     async fn stream(
@@ -52,18 +102,9 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
         req: &ChatRequest,
         cred: &ResolvedCredential,
     ) -> Result<EventStream, AdapterError> {
-        let model = catalog::chatgpt_subscription_models()
-            .into_iter()
-            .find(|m| m.api_id == req.api_model)
-            .ok_or_else(|| AdapterError::Unsupported {
-                capability: "model".into(),
-                hint: Some(format!(
-                    "{} no está disponible por suscripción; usa la vía de API key",
-                    req.api_model
-                )),
-            })?;
-
-        check_capabilities(req, &model)?;
+        // Las capacidades ya las comprobó el servicio contra el catálogo real
+        // descubierto; repetirlo aquí con un manifiesto local rechazaría
+        // modelos nuevos perfectamente válidos.
 
         if req.temperature.is_some() || req.top_p.is_some() || !req.stop.is_empty() {
             tracing::debug!(
@@ -175,6 +216,79 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
     }
 }
 
+/// Traduce la respuesta del endpoint de catálogo a descriptores de modelo.
+///
+/// Se descartan los modelos marcados como ocultos (`visibility != "list"`) y los
+/// que el proveedor no expone por API: son internos del cliente oficial y
+/// ofrecerlos sería prometer algo que no funciona.
+///
+/// El campo `instructions_template` que viene en la respuesta contiene el prompt
+/// de sistema del cliente oficial. **No se usa**: inyectarlo sería hacer pasar a
+/// Nexo por ese cliente, y eso es lo que el ADR 0001 prohíbe.
+fn parse_models(body: &serde_json::Value) -> Vec<ModelDescriptor> {
+    let Some(items) = body.get("models").and_then(|m| m.as_array()) else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter(|m| {
+            let visible = m
+                .get("visibility")
+                .and_then(|v| v.as_str())
+                .map(|v| v == "list")
+                .unwrap_or(true);
+            let in_api = m
+                .get("supported_in_api")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            visible && in_api
+        })
+        .filter_map(|m| {
+            let slug = m.get("slug").and_then(|v| v.as_str())?;
+            let modalities: Vec<&str> = m
+                .get("input_modalities")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let reasoning_levels = m
+                .get("supported_reasoning_levels")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+
+            Some(ModelDescriptor {
+                api_id: slug.to_string(),
+                public_name: format!("{PROVIDER}/{slug}"),
+                caps: Capabilities {
+                    text: modalities.is_empty() || modalities.contains(&"text"),
+                    vision: modalities.contains(&"image"),
+                    audio: modalities.contains(&"audio"),
+                    tools: true,
+                    reasoning: reasoning_levels > 0,
+                    json_mode: true,
+                    streaming: true,
+                    embeddings: false,
+                },
+                limits: Limits {
+                    context_max: m
+                        .get("context_window")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
+                    input_max: m
+                        .get("context_window")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
+                    output_max: None,
+                },
+                accounting: Accounting::Subscription,
+                // Sin precio: el coste marginal es cero y la cuota es desconocida.
+                pricing: None,
+            })
+        })
+        .collect()
+}
+
 /// ¿Puede este `content-type` corresponder a un stream de eventos?
 ///
 /// Ausente cuenta como plausible: el backend de ChatGPT no lo envía, y
@@ -269,6 +383,82 @@ mod tests {
     #[test]
     fn server_errors_stay_upstream() {
         assert_eq!(classify_http_error(503, None, "").kind_str(), "upstream");
+    }
+
+    /// Recorte de la respuesta real del endpoint, capturada el 2026-07-31.
+    fn real_catalog_sample() -> serde_json::Value {
+        serde_json::json!({"models": [
+            {
+                "slug": "gpt-5.6-sol",
+                "display_name": "GPT-5.6-Sol",
+                "context_window": 272000,
+                "max_context_window": 1000000,
+                "input_modalities": ["text", "image"],
+                "supported_reasoning_levels": [
+                    {"effort": "low"}, {"effort": "medium"},
+                    {"effort": "high"}, {"effort": "xhigh"}
+                ],
+                "minimal_client_version": "0.144.0",
+                "visibility": "list",
+                "supported_in_api": true,
+                "instructions_template": "You are Codex, a coding agent…"
+            },
+            {
+                "slug": "codex-auto-review",
+                "display_name": "Codex Auto Review",
+                "context_window": 272000,
+                "input_modalities": ["text", "image"],
+                "visibility": "hide",
+                "supported_in_api": true
+            },
+            {
+                "slug": "solo-cliente",
+                "context_window": 1000,
+                "visibility": "list",
+                "supported_in_api": false
+            }
+        ]})
+    }
+
+    #[test]
+    fn discovers_visible_api_models_only() {
+        let models = parse_models(&real_catalog_sample());
+        let ids: Vec<&str> = models.iter().map(|m| m.api_id.as_str()).collect();
+        assert_eq!(ids, vec!["gpt-5.6-sol"]);
+        assert!(
+            !ids.contains(&"codex-auto-review"),
+            "un modelo oculto es interno del cliente oficial, no se ofrece"
+        );
+        assert!(
+            !ids.contains(&"solo-cliente"),
+            "sin soporte en API, ofrecerlo sería prometer algo que no funciona"
+        );
+    }
+
+    #[test]
+    fn discovered_models_carry_provider_and_metadata() {
+        let m = &parse_models(&real_catalog_sample())[0];
+        assert_eq!(m.public_name, "openai/gpt-5.6-sol");
+        assert_eq!(m.limits.context_max, Some(272_000));
+        assert!(m.caps.text);
+        assert!(m.caps.vision, "input_modalities incluye image");
+        assert!(!m.caps.audio);
+        assert!(m.caps.reasoning, "tiene niveles de razonamiento");
+        assert!(m.caps.streaming);
+    }
+
+    #[test]
+    fn discovered_models_are_subscription_and_unpriced() {
+        for m in parse_models(&real_catalog_sample()) {
+            assert_eq!(m.accounting, Accounting::Subscription);
+            assert!(m.pricing.is_none());
+        }
+    }
+
+    #[test]
+    fn a_body_without_models_yields_nothing() {
+        assert!(parse_models(&serde_json::json!({"models": []})).is_empty());
+        assert!(parse_models(&serde_json::json!({})).is_empty());
     }
 
     #[test]

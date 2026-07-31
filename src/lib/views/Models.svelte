@@ -3,6 +3,42 @@
 
   let rows = $state<CatalogRow[]>([]);
   let error = $state<string | null>(null);
+  let info = $state<string | null>(null);
+  let refreshing = $state(false);
+
+  async function load() {
+    try {
+      rows = await api.catalog();
+      error = null;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  async function refresh() {
+    refreshing = true;
+    error = null;
+    info = null;
+    try {
+      const results = await api.refreshCatalog();
+      if (results.length === 0) {
+        info = "No hay ninguna cuenta conectada a la que preguntar.";
+      } else {
+        info = results
+          .map((r) =>
+            r.error
+              ? `${r.provider_id} · ${kindLabel(r.credential_kind)}: ${r.error}`
+              : `${r.provider_id} · ${kindLabel(r.credential_kind)}: ${r.discovered} modelo(s)`,
+          )
+          .join(" · ");
+      }
+      await load();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      refreshing = false;
+    }
+  }
 
   const caps = [
     { key: "text", label: "Texto" },
@@ -14,15 +50,20 @@
   ] as const;
 
   $effect(() => {
-    api
-      .catalog()
-      .then((r) => (rows = r))
-      .catch((e) => (error = errorText(e)));
+    load();
   });
 </script>
 
 <div class="stack">
   {#if error}<div class="notice err">{error}</div>{/if}
+  {#if info}<div class="notice info">{info}</div>{/if}
+
+  <div class="row" style="justify-content: space-between">
+    <h2>Catálogo</h2>
+    <button class="primary" onclick={refresh} disabled={refreshing}>
+      {refreshing ? "Preguntando al proveedor…" : "Actualizar desde el proveedor"}
+    </button>
+  </div>
 
   <div class="notice info">
     El mismo modelo aparece una vez por cada vía de acceso, porque no ofrece lo mismo

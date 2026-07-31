@@ -81,9 +81,13 @@ pub struct ChatRequest {
 }
 ```
 
+La comprobación se hace en el servicio, contra el catálogo persistido, no en el
+adaptador contra una lista compilada: si no, un modelo descubierto y perfectamente
+válido se rechazaría por no figurar en el código.
+
 Regla, y es la que evita el peor fallo posible del producto:
 
-> **Si el destino no soporta una capacidad solicitada, el adaptador devuelve `AdapterError::Unsupported` y el gateway responde `422` con un mensaje que nombra la capacidad y la alternativa. Nunca se elimina en silencio, ni se sustituye por un equivalente aproximado.**
+> **Si el destino no soporta una capacidad solicitada, se devuelve `AdapterError::Unsupported` y el gateway responde `422` con un mensaje que nombra la capacidad y la alternativa. Nunca se elimina en silencio, ni se sustituye por un equivalente aproximado.**
 
 Degradar en silencio produce respuestas peores sin que el usuario sepa por qué, y es exactamente el fallo que la promesa de «catálogo unificado» invita a cometer.
 

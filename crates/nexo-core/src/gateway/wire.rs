@@ -127,6 +127,7 @@ impl WireChatRequest {
             "low" => Some(ReasoningEffort::Low),
             "medium" => Some(ReasoningEffort::Medium),
             "high" => Some(ReasoningEffort::High),
+            "xhigh" => Some(ReasoningEffort::XHigh),
             _ => None,
         });
 

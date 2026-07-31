@@ -132,6 +132,13 @@ export interface RequestRow {
   operation: string;
 }
 
+export interface CatalogRefresh {
+  provider_id: string;
+  credential_kind: string;
+  discovered: number;
+  error: string | null;
+}
+
 export interface Settings {
   port: number;
   allow_lan: boolean;
@@ -139,6 +146,7 @@ export interface Settings {
   content_retention_days: number;
   log_level: string;
   manifest_version: string;
+  codex_client_version: string;
 }
 
 export interface RiskNotice {
@@ -178,6 +186,7 @@ export const api = {
   }) => invoke<void>("set_app_access", args),
 
   catalog: () => invoke<CatalogRow[]>("catalog"),
+  refreshCatalog: () => invoke<CatalogRefresh[]>("refresh_catalog"),
   usageSummary: (days: number, group: string, operation?: string) =>
     invoke<UsageBucket[]>("usage_summary", { days, group, operation }),
   recentRequests: (limit: number) =>

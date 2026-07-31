@@ -47,7 +47,7 @@ capacidades, límites y contabilidad **distintos** según cómo se haya autentic
 | --- | --- | --- |
 | Estabilidad | API pública y documentada | Flujo no soportado, puede romperse sin aviso |
 | Coste | Por token, facturado aparte | Cubierto por el plan, sin coste marginal |
-| Catálogo | Completo | Subconjunto de modelos, con capacidades recortadas |
+| Catálogo | Completo, capacidades desde manifiesto | Subconjunto, publicado por el proveedor con sus metadatos |
 | Métricas de uso | Tokens reportados | Tokens reportados; cuota consumida no expuesta |
 | Límites | Rate limits documentados | Solo se descubren al recibir un `429` |
 | Riesgo para la cuenta | Ninguno | Posible incumplimiento de las condiciones del servicio |
@@ -106,10 +106,19 @@ Indexado por proveedor **y** tipo de credencial, porque el mismo modelo no ofrec
 lo mismo por las dos vías. Muestra proveedor, vía, nombre original y normalizado,
 capacidades, contexto y límites, modo de contabilidad y disponibilidad.
 
-Las capacidades de un modelo no son descubribles mediante las APIs de los
-proveedores: solo se puede consultar qué modelos existen, no qué hacen. Por eso
-hay un manifiesto versionado que se distribuye con la aplicación, se cruza con lo
-que el proveedor anuncie y admite anulaciones locales.
+De dónde salen las capacidades depende del proveedor, y no se puede asumir lo
+mismo para todos:
+
+- La **vía de suscripción de ChatGPT** publica su catálogo con contexto,
+  modalidades y niveles de razonamiento por modelo. Ahí manda el proveedor, y así
+  las familias nuevas aparecen sin esperar a una versión de Nexo. El endpoint
+  filtra por versión de cliente declarada, que es un ajuste de configuración.
+- La **API pública** solo dice qué modelos existen, no qué hacen. Ahí las
+  capacidades vienen de un manifiesto versionado que se distribuye con la
+  aplicación.
+
+Precedencia: descubrimiento del proveedor > manifiesto local. El manifiesto es el
+respaldo para cuando el proveedor no responde.
 
 El nombre público lleva siempre el proveedor delante.
 

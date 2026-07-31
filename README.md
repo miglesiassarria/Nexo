@@ -30,6 +30,7 @@ Primera versión funcional. Lo que hay hoy:
 | Proveedor mock para probar sin credenciales | ✅ |
 | Tokens por aplicación, revocables, con límites | ✅ |
 | Credenciales en el Keychain del sistema | ✅ |
+| Catálogo descubierto del proveedor, no clavado a mano | ✅ |
 | Estadísticas locales y panel | ✅ |
 | Icono en la barra de estado, cierre sin parar el gateway | ✅ |
 | Google Gemini, Anthropic, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |

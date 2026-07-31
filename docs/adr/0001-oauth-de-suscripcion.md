@@ -89,6 +89,7 @@ Ejercida el **2026-07-31** con una suscripción de ChatGPT propia. Resultado:
 | Qué modelos responden | ✅ `gpt-5.5`, `gpt-5.4` y `gpt-5.4-mini`. |
 | Si llega información de uso | ✅ **Sí, y más de lo previsto:** tokens de entrada, salida, razonamiento y caché. |
 | Si llega información de cuota | ❌ No se ha observado ninguna. |
+| Si hay endpoint de catálogo | ✅ **Sí**, con metadatos ricos por modelo. |
 | Caducidad del access token | ~10 días, con refresh token disponible. |
 
 Dos correcciones al diseño que salieron de esta prueba:
@@ -104,6 +105,26 @@ Dos correcciones al diseño que salieron de esta prueba:
    así. Lo que sigue siendo invisible es la cuota del plan, así que el estado de
    contabilidad `Subscription` sigue siendo el correcto: coste marginal cero,
    tokens conocidos, cuota desconocida.
+
+3. **Esta vía tiene endpoint de catálogo.** Se asumió que no, y que el catálogo
+   tendría que mantenerse a mano en un manifiesto. Existe, y publica por modelo el
+   contexto, las modalidades de entrada, los niveles de razonamiento admitidos y
+   una `minimal_client_version`. El manifiesto local pasa a ser solo respaldo.
+
+   Dos consecuencias:
+
+   - **El catálogo se filtra por versión de cliente declarada.** Pedirlo con una
+     versión baja devuelve una lista corta o vacía. Nexo declara una versión
+     concreta y documentada, ajustable por el usuario. Deliberadamente no se envía
+     un número absurdamente alto: sería afirmar una versión que no existe.
+   - **La comprobación de capacidades se movió al servicio.** Estaba en el
+     adaptador, contra el manifiesto, y eso habría rechazado como «modelo no
+     soportado» cualquier familia nueva descubierta. Ahora se comprueba contra el
+     catálogo real de la base de datos.
+
+   La respuesta incluye también el `instructions_template` del cliente oficial,
+   es decir su prompt de sistema. **No se usa**: inyectarlo sería hacer pasar a
+   Nexo por ese cliente, justo lo que este documento prohíbe.
 
 Lo que esta validación **no** demuestra: que la vía siga funcionando mañana. Sigue
 siendo un mecanismo no soportado y los riesgos 1 a 4 se mantienen intactos.

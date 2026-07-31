@@ -47,6 +47,7 @@ fn main() {
             commands::app_detail,
             commands::set_app_access,
             commands::catalog,
+            commands::refresh_catalog,
             commands::usage_summary,
             commands::recent_requests,
             commands::load_settings,
@@ -89,6 +90,21 @@ fn main() {
                     nexo.set_bind_error(Some(detail));
                 }
             }
+
+            // El catálogo del proveedor se pide al arrancar, sin bloquear: si
+            // falla, queda el manifiesto local y el usuario puede reintentarlo.
+            let catalog_nexo = nexo.clone();
+            tauri::async_runtime::spawn(async move {
+                for result in catalog_nexo.refresh_catalog_from_providers().await {
+                    if let Some(error) = &result.error {
+                        tracing::warn!(
+                            provider = %result.provider_id,
+                            %error,
+                            "no se pudo descubrir el catálogo al arrancar"
+                        );
+                    }
+                }
+            });
 
             Ok(())
         })

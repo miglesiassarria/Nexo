@@ -25,6 +25,24 @@ pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const ISSUER: &str = "https://auth.openai.com";
 /// Backend de la aplicación de ChatGPT. No es la API pública.
 pub const API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+/// Catálogo de modelos de esa misma vía. Exige el parámetro `client_version`.
+pub const MODELS_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/models";
+
+/// Versión de cliente que Nexo declara al pedir el catálogo.
+///
+/// El endpoint filtra los modelos por `minimal_client_version`: pedir con una
+/// versión baja devuelve una lista corta o vacía. Este valor NO es la versión de
+/// Nexo, es la del cliente oficial cuyo catálogo se solicita, y por eso vive
+/// aquí, con el resto de lo frágil.
+///
+/// Se fija en la versión mínima que expone la familia vigente en la última
+/// verificación (2026-07-31: `gpt-5.6-*` exige 0.144.0). Cuando aparezca una
+/// familia nueva habrá que subirlo; el usuario puede hacerlo desde la
+/// configuración sin esperar a una versión de Nexo.
+///
+/// Deliberadamente NO se envía un número absurdamente alto: sería afirmar una
+/// versión que no existe.
+pub const DEFAULT_CLIENT_VERSION: &str = "0.144.0";
 /// El puerto es parte del `redirect_uri` registrado: no es configurable.
 pub const CALLBACK_PORT: u16 = 1455;
 pub const CALLBACK_PATH: &str = "/auth/callback";

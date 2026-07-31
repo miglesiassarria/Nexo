@@ -171,6 +171,8 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    /// Presente en la vía de suscripción de ChatGPT.
+    XHigh,
 }
 
 impl ReasoningEffort {
@@ -180,6 +182,7 @@ impl ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
         }
     }
 }

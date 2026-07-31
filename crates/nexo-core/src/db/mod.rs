@@ -60,6 +60,7 @@ impl Db {
                 }
                 "log_level" => settings.log_level = value,
                 "manifest_version" => settings.manifest_version = value,
+                "codex_client_version" => settings.codex_client_version = value,
                 _ => {}
             }
         }
@@ -76,6 +77,7 @@ impl Db {
             ("content_retention_days", s.content_retention_days.to_string()),
             ("log_level", s.log_level.clone()),
             ("manifest_version", s.manifest_version.clone()),
+            ("codex_client_version", s.codex_client_version.clone()),
         ] {
             conn.execute(
                 "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
@@ -293,7 +295,8 @@ impl Db {
         };
 
         let mut stmt = conn.prepare(
-            "SELECT provider_id, credential_kind, api_id, public_name, accounting
+            "SELECT provider_id, credential_kind, api_id, public_name, accounting,
+                    caps, context_max, input_max, output_max
              FROM models
              WHERE available = 1
                AND (?1 IS NULL OR provider_id = ?1)
@@ -308,6 +311,12 @@ impl Db {
                     api_id: r.get(2)?,
                     public_name: r.get(3)?,
                     accounting: r.get::<_, String>(4)?,
+                    caps: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(),
+                    limits: crate::provider::Limits {
+                        context_max: r.get::<_, Option<i64>>(6)?.map(|v| v as u32),
+                        input_max: r.get::<_, Option<i64>>(7)?.map(|v| v as u32),
+                        output_max: r.get::<_, Option<i64>>(8)?.map(|v| v as u32),
+                    },
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -391,9 +400,25 @@ pub struct ResolvedModel {
     pub api_id: String,
     pub public_name: String,
     pub accounting: String,
+    /// Capacidades reales de esta pareja modelo+credencial, tal como las
+    /// publicó el proveedor o las declara el manifiesto.
+    pub caps: crate::provider::Capabilities,
+    pub limits: crate::provider::Limits,
 }
 
 impl ResolvedModel {
+    /// Descriptor equivalente, para comprobar capacidades sin volver a consultar.
+    pub fn descriptor(&self) -> ModelDescriptor {
+        ModelDescriptor {
+            api_id: self.api_id.clone(),
+            public_name: self.public_name.clone(),
+            caps: self.caps.clone(),
+            limits: self.limits.clone(),
+            accounting: self.accounting_enum(),
+            pricing: None,
+        }
+    }
+
     pub fn accounting_enum(&self) -> Accounting {
         match self.accounting.as_str() {
             "subscription" => Accounting::Subscription,

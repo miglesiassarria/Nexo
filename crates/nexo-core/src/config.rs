@@ -19,6 +19,9 @@ pub struct Settings {
     pub content_retention_days: i64,
     pub log_level: String,
     pub manifest_version: String,
+    /// Versión de cliente que se declara al pedir el catálogo de la vía de
+    /// suscripción. Subirla expone familias de modelos más nuevas.
+    pub codex_client_version: String,
 }
 
 impl Default for Settings {
@@ -30,6 +33,7 @@ impl Default for Settings {
             content_retention_days: 7,
             log_level: "info".into(),
             manifest_version: crate::catalog::MANIFEST_VERSION.into(),
+            codex_client_version: crate::auth::chatgpt::DEFAULT_CLIENT_VERSION.into(),
         }
     }
 }

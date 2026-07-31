@@ -48,9 +48,17 @@ impl Nexo {
             .connect_timeout(std::time::Duration::from_secs(15))
             .build()?;
 
+        let client_version = db
+            .settings()
+            .map(|s| s.codex_client_version)
+            .unwrap_or_else(|_| chatgpt::DEFAULT_CLIENT_VERSION.to_string());
+
         let mut adapters: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
         for adapter in [
-            Arc::new(ChatgptSubscriptionAdapter::new(http.clone())) as Arc<dyn ProviderAdapter>,
+            Arc::new(ChatgptSubscriptionAdapter::with_client_version(
+                http.clone(),
+                client_version,
+            )) as Arc<dyn ProviderAdapter>,
             Arc::new(OpenAiApiKeyAdapter::new(http.clone())),
             Arc::new(MockAdapter::default()),
         ] {
@@ -141,6 +149,76 @@ impl Nexo {
         Ok(())
     }
 
+    /// Pregunta a cada proveedor conectado qué modelos ofrece realmente y
+    /// reemplaza su parte del catálogo.
+    ///
+    /// El manifiesto local solo es el punto de partida: cuando el proveedor
+    /// publica su catálogo, gana él. Así aparecen familias nuevas sin esperar a
+    /// una versión de Nexo.
+    ///
+    /// Devuelve, por vía, cuántos modelos se descubrieron o el motivo del fallo.
+    pub async fn refresh_catalog_from_providers(&self) -> Vec<CatalogRefresh> {
+        let mut out = Vec::new();
+
+        let accounts = match self.db.accounts() {
+            Ok(a) => a,
+            Err(e) => {
+                return vec![CatalogRefresh {
+                    provider_id: "-".into(),
+                    credential_kind: "-".into(),
+                    discovered: 0,
+                    error: Some(e.to_string()),
+                }]
+            }
+        };
+
+        for account in accounts {
+            if account.status == "revoked" {
+                continue;
+            }
+            let slug = AdapterId::new(account.provider_id.clone(), account.credential_kind).slug();
+            let Some(adapter) = self.adapters.get(&slug) else {
+                continue;
+            };
+
+            let mut entry = CatalogRefresh {
+                provider_id: account.provider_id.clone(),
+                credential_kind: account.credential_kind.as_str().to_string(),
+                discovered: 0,
+                error: None,
+            };
+
+            match self.resolve_credential(&account).await {
+                Err(e) => entry.error = Some(e.to_string()),
+                Ok(cred) => match adapter.catalog(&cred).await {
+                    Err(e) => entry.error = Some(e.to_string()),
+                    Ok(models) => {
+                        entry.discovered = models.len();
+                        if let Err(e) = self.db.replace_models(
+                            &account.provider_id,
+                            account.credential_kind,
+                            &models,
+                            &format!("descubierto {}", util::now_ms()),
+                        ) {
+                            entry.error = Some(e.to_string());
+                        } else {
+                            tracing::info!(
+                                provider = %account.provider_id,
+                                kind = account.credential_kind.as_str(),
+                                count = models.len(),
+                                "catálogo actualizado desde el proveedor"
+                            );
+                        }
+                    }
+                },
+            }
+
+            out.push(entry);
+        }
+
+        out
+    }
+
     // -- OAuth --------------------------------------------------------------
 
     /// Ejecuta el flujo completo de conexión de una cuenta de ChatGPT.
@@ -215,6 +293,15 @@ impl Nexo {
 
         self.db.upsert_account(&account)?;
         tracing::info!(account = %account.id, "cuenta de suscripción de ChatGPT conectada");
+
+        // El catálogo real solo se puede pedir con una credencial válida, así
+        // que este es el momento.
+        for result in self.refresh_catalog_from_providers().await {
+            if let Some(error) = &result.error {
+                tracing::warn!(%error, "no se pudo descubrir el catálogo tras conectar");
+            }
+        }
+
         Ok(account)
     }
 
@@ -630,6 +717,11 @@ impl Nexo {
                 hint: Some(e),
             })?;
 
+        // Rechazo explícito antes de gastar nada. Se hace aquí y no en el
+        // adaptador porque el catálogo real vive en la base de datos: los
+        // modelos descubiertos no están en ningún manifiesto local.
+        crate::provider::check_capabilities(&req, &resolved.descriptor())?;
+
         self.policy.check(
             app_id,
             &resolved.provider_id,
@@ -972,6 +1064,15 @@ impl Collector {
     pub fn provider_request_id(&self) -> Option<String> {
         self.provider_request_id.clone()
     }
+}
+
+/// Resultado de refrescar el catálogo de una vía concreta.
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogRefresh {
+    pub provider_id: String,
+    pub credential_kind: String,
+    pub discovered: usize,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
