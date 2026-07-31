@@ -1,4 +1,10 @@
-.claude/
+# La automatización del repositorio SÍ se versiona: es parte de la metodología.
+# Lo que queda fuera es la configuración personal de cada máquina.
+.claude/*
+!.claude/commands/
+!.claude/skills/
+!.claude/settings.json
+.claude/settings.local.json
 
 # --- Resultados de compilación (Rust) -------------------------------------
 /target
