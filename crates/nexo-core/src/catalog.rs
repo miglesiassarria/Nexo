@@ -29,8 +29,11 @@ fn caps_full() -> Capabilities {
 /// capacidades recortadas: no hay precios porque no hay coste marginal, y los
 /// modos de razonamiento más costosos quedan fuera.
 ///
-/// ÚLTIMA VERIFICACIÓN: 2026-07-30. Debe confirmarse con el spike de OAuth,
-/// porque esta lista solo se puede comprobar ejerciendo el flujo real.
+/// VERIFICADO CONTRA UNA CUENTA REAL EL 2026-07-31: los tres modelos
+/// responden por esta vía, con streaming y sin él. A diferencia de lo que se
+/// suponía al diseñarlo, el proveedor **sí** informa de tokens de entrada,
+/// salida, razonamiento y caché. Lo que no expone es la cuota consumida del
+/// plan, así que la contabilidad sigue siendo `Subscription`.
 pub fn chatgpt_subscription_models() -> Vec<ModelDescriptor> {
     ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
         .into_iter()

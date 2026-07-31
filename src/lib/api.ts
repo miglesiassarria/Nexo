@@ -129,6 +129,7 @@ export interface RequestRow {
   cost_micros: number | null;
   cost_basis: CostBasis;
   fallback_from: string | null;
+  operation: string;
 }
 
 export interface Settings {
@@ -177,8 +178,8 @@ export const api = {
   }) => invoke<void>("set_app_access", args),
 
   catalog: () => invoke<CatalogRow[]>("catalog"),
-  usageSummary: (days: number, group: string) =>
-    invoke<UsageBucket[]>("usage_summary", { days, group }),
+  usageSummary: (days: number, group: string, operation?: string) =>
+    invoke<UsageBucket[]>("usage_summary", { days, group, operation }),
   recentRequests: (limit: number) =>
     invoke<RequestRow[]>("recent_requests", { limit }),
 
@@ -264,6 +265,24 @@ export function formatTime(ts: number | null): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+/**
+ * Traduce el motivo por el que una consulta de catálogo salió vacía. Es el
+ * síntoma más difícil de diagnosticar del producto: el cliente solo dice «no se
+ * encontraron modelos», sea por token, por permisos o por cuenta.
+ */
+export function catalogReason(errorKind: string | null): string | null {
+  switch (errorKind) {
+    case "no_grants":
+      return "La aplicación no tiene ninguna vía concedida. Dale permisos en Aplicaciones.";
+    case "no_account":
+      return "No hay ninguna cuenta conectada. Conéctala en Proveedores.";
+    case "empty_catalog":
+      return "Tiene permisos, pero ninguna vía concedida coincide con una cuenta conectada.";
+    default:
+      return null;
+  }
 }
 
 export function errorText(e: unknown): string {

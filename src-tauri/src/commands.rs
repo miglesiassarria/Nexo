@@ -206,12 +206,13 @@ pub fn usage_summary(
     state: State<'_, AppState>,
     days: i64,
     group: String,
+    operation: Option<String>,
 ) -> CmdResult<Vec<UsageBucket>> {
     let since = util::now_ms() - days.max(1) * DAY_MS;
     state
         .nexo
         .db()
-        .usage_summary(since, GroupBy::parse(&group))
+        .usage_summary(since, GroupBy::parse(&group), operation.as_deref())
         .map_err(map_err)
 }
 

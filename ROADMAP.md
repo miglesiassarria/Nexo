@@ -39,17 +39,11 @@ Dos spikes de código, no documentos.
       de ventana que oculta en lugar de terminar, y Axum escuchando en
       `127.0.0.1` en el mismo proceso. Mediciones anotadas en el
       [ADR 0002](docs/adr/0002-stack-tauri-rust-svelte.md).
-- [ ] **Spike de OAuth de suscripción.** El flujo está implementado en
-      `crates/nexo-core/src/auth/chatgpt.rs` y el adaptador en
-      `crates/nexo-core/src/provider/chatgpt_subscription.rs`. **Falta
-      ejercitarlo contra una cuenta real de ChatGPT.** Es el spike que decide si
-      Nexo tiene razón de ser, y solo puede completarse con un login humano.
-
-      Qué hay que confirmar y anotar en el ADR 0001:
-      - Que `auth.openai.com` acepta el flujo con `originator=nexo`.
-      - Qué modelos aparecen realmente por esta vía.
-      - Si llega alguna información de uso o de cuota.
-      - La forma exacta de los errores cuando la ruta falla.
+- [x] **Spike de OAuth de suscripción.** Ejercido contra una cuenta real el
+      2026-07-31: el flujo funciona con `originator=nexo`, los tres modelos del
+      catálogo responden, y el proveedor informa de tokens aunque no de cuota.
+      Resultados y correcciones en el
+      [ADR 0001](docs/adr/0001-oauth-de-suscripcion.md#validación-contra-una-cuenta-real).
 
 ### Fase 1 — Gateway mínimo de extremo a extremo ✅
 
@@ -72,7 +66,7 @@ Dos spikes de código, no documentos.
 - [x] Respaldo automático a API key cuando la ruta de suscripción falla, con
       error comprensible cuando no hay respaldo configurado.
 - [x] Catálogo diferenciado por credencial.
-- [ ] Validación con una cuenta real (depende del spike de la fase 0).
+- [x] Validación con una cuenta real.
 - [ ] Revocación desde Nexo del consentimiento OAuth en el proveedor.
 
 ### Fase 3 — Control y experiencia de usuario
@@ -82,6 +76,7 @@ Dos spikes de código, no documentos.
 - [x] Gestión de retención y borrado de estadísticas.
 - [ ] Aprobación interactiva de conexiones nuevas.
 - [ ] Perfiles y reglas de enrutado.
+- [x] Consultas de catálogo registradas con el motivo cuando salen vacías.
 - [ ] Health checks por proveedor y vista de diagnóstico.
 - [ ] Exportación de estadísticas en formatos abiertos.
 - [ ] Registro opcional de contenido por aplicación, con su propia retención.
@@ -117,13 +112,14 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 | | Criterio | Estado |
 | --- | --- | --- |
 | 1 | Instalarlo y ejecutarlo localmente sin desplegar un servidor externo | ✅ |
-| 2 | Autorizar su suscripción de ChatGPT con un único login y usarla después desde cualquier aplicación sin API key | ⏳ implementado, sin validar con cuenta real |
+| 2 | Autorizar su suscripción de ChatGPT con un único login y usarla después desde cualquier aplicación sin API key | ✅ validado el 2026-07-31 |
 | 3 | Conectar una aplicación compatible con OpenAI usando una URL local y un token de Nexo | ✅ |
 | 4 | Elegir un modelo de varios proveedores sin cambiar la integración del cliente | ⏳ falta un segundo proveedor real |
 | 5 | Ver qué modelos están disponibles por suscripción y qué modelos exigen API key, sin sorpresas en ejecución | ✅ |
 | 6 | Revocar el acceso de una aplicación sin invalidar las demás | ✅ |
 | 7 | Saber qué proveedor, credencial y modelo atendió cada petición y cuánto tardó | ✅ |
 | 8 | Fijar un límite de uso por aplicación y ver el consumo acumulado | ⏳ límite aplicado; falta mostrar el consumo restante en el panel |
+| 17 | Entender desde el panel por qué un cliente no ve modelos | ✅ |
 | 9 | Desconectar una cuenta y eliminar sus tokens del equipo | ✅ |
 | 10 | Usar modelos locales cuando no quiera enviar datos a un proveedor cloud | ⬜ fase 4 |
 | 11 | Consultar el uso por aplicación, proveedor, credencial, modelo y periodo | ✅ |

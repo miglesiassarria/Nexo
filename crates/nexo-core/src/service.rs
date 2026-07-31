@@ -410,7 +410,82 @@ impl Nexo {
     // -- Catálogo por aplicación -------------------------------------------
 
     /// Modelos que una aplicación concreta puede usar, con la vía anotada.
+    ///
+    /// Registra la consulta, y cuando el resultado es vacío anota el motivo.
+    /// Sin esto un catálogo vacío no deja rastro, y desde el cliente es
+    /// indistinguible de un token inválido o de un fallo del gateway: los tres
+    /// se ven como «no se encontraron modelos».
     pub fn models_for_app(&self, app_id: &str) -> Result<Vec<Value>> {
+        let started = Instant::now();
+        let models = self.build_models_for_app(app_id)?;
+
+        let reason = if !models.is_empty() {
+            None
+        } else if self.db.grants(app_id)?.is_empty() {
+            Some("no_grants")
+        } else if self
+            .db
+            .accounts()?
+            .iter()
+            .all(|a| a.status == "revoked")
+        {
+            Some("no_account")
+        } else {
+            Some("empty_catalog")
+        };
+
+        self.record_catalog_query(app_id, models.len(), reason, started);
+        Ok(models)
+    }
+
+    /// Anota una consulta de catálogo como evento de operación `models`.
+    ///
+    /// No consume cuota ni coste, así que se registra aparte de la inferencia y
+    /// el panel la excluye de los totales de uso.
+    fn record_catalog_query(
+        &self,
+        app_id: &str,
+        count: usize,
+        reason: Option<&str>,
+        started: Instant,
+    ) {
+        let event = crate::db::stats::RequestEvent {
+            id: util::new_id("req"),
+            ts: util::now_ms(),
+            app_id: app_id.to_string(),
+            provider_id: "-".into(),
+            credential_kind: "-".into(),
+            account_id: None,
+            public_model: format!("{count} modelo(s)"),
+            api_model: "-".into(),
+            operation: "models".into(),
+            streamed: false,
+            status: if reason.is_some() {
+                crate::db::stats::RequestStatus::Error
+            } else {
+                crate::db::stats::RequestStatus::Ok
+            },
+            error_kind: reason.map(str::to_string),
+            http_status: Some(200),
+            latency_ms: Some(started.elapsed().as_millis() as i64),
+            ttft_ms: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+            usage_source: UsageSource::Unavailable,
+            cost_micros: None,
+            cost_basis: CostBasis::Unavailable,
+            fallback_from: None,
+            provider_usage_raw: None,
+            provider_request_id: None,
+        };
+        if let Err(e) = self.db.record_request(&event) {
+            tracing::error!(error = %e, "no se pudo registrar la consulta de catálogo");
+        }
+    }
+
+    fn build_models_for_app(&self, app_id: &str) -> Result<Vec<Value>> {
         let grants = self.db.grants(app_id)?;
         let accounts = self.db.accounts()?;
         let rows = self.db.catalog_rows()?;

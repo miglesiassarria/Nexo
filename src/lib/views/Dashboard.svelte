@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     api,
+    catalogReason,
     costHint,
     costLabel,
     errorText,
@@ -31,7 +32,8 @@
 
   async function load() {
     try {
-      buckets = await api.usageSummary(days, group);
+      // Solo inferencia: una consulta de catálogo no consume nada.
+      buckets = await api.usageSummary(days, group, "chat");
       recent = await api.recentRequests(40);
       error = null;
     } catch (e) {
@@ -189,6 +191,7 @@
               <th>Aplicación</th>
               <th>Modelo</th>
               <th>Vía</th>
+              <th>Tipo</th>
               <th>Estado</th>
               <th>Latencia</th>
               <th>Tokens</th>
@@ -200,7 +203,12 @@
               <tr>
                 <td class="muted">{formatTime(r.ts)}</td>
                 <td>{r.app}</td>
-                <td>{r.public_model}</td>
+                <td>
+                  {r.public_model}
+                  {#if r.operation === "models" && catalogReason(r.error_kind)}
+                    <div class="muted reason">{catalogReason(r.error_kind)}</div>
+                  {/if}
+                </td>
                 <td>
                   <span
                     class="badge"
@@ -214,8 +222,19 @@
                   {/if}
                 </td>
                 <td>
+                  {#if r.operation === "models"}
+                    <span class="badge">catálogo</span>
+                  {:else}
+                    <span class="badge">chat</span>
+                  {/if}
+                </td>
+                <td>
                   {#if r.status === "ok"}
                     <span class="badge ok">ok</span>
+                  {:else if r.operation === "models"}
+                    <span class="badge warn" title={catalogReason(r.error_kind) ?? ""}>
+                      catálogo vacío
+                    </span>
                   {:else}
                     <span class="badge err" title={r.error_kind ?? ""}>
                       {r.error_kind ?? r.status}
@@ -300,5 +319,11 @@
 
   .bar-cell span {
     font-variant-numeric: tabular-nums;
+  }
+
+  .reason {
+    font-size: 0.72rem;
+    max-width: 22rem;
+    line-height: 1.35;
   }
 </style>

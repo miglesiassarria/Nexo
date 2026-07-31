@@ -48,7 +48,7 @@ capacidades, límites y contabilidad **distintos** según cómo se haya autentic
 | Estabilidad | API pública y documentada | Flujo no soportado, puede romperse sin aviso |
 | Coste | Por token, facturado aparte | Cubierto por el plan, sin coste marginal |
 | Catálogo | Completo | Subconjunto de modelos, con capacidades recortadas |
-| Métricas de uso | El proveedor informa de tokens | El proveedor no informa de tokens ni de cuota |
+| Métricas de uso | Tokens reportados | Tokens reportados; cuota consumida no expuesta |
 | Límites | Rate limits documentados | Solo se descubren al recibir un `429` |
 | Riesgo para la cuenta | Ninguno | Posible incumplimiento de las condiciones del servicio |
 
@@ -67,7 +67,8 @@ otras aplicaciones instaladas y la suplantación de otro cliente.
 **OpenAI y ChatGPT** es el proveedor prioritario, con las dos vías. La de
 suscripción habla el formato **Responses** contra el backend de la aplicación de
 ChatGPT, no la API pública, así que la traducción de formatos es el caso base del
-producto y no una excepción.
+producto y no una excepción. Está validada contra una cuenta real: ver la
+sección de validación del [ADR 0001](adr/0001-oauth-de-suscripcion.md).
 
 **Google y Gemini** entra con OAuth para la Gemini API cuando el usuario tenga un
 proyecto de Google Cloud. La autorización de la API y una suscripción de la
@@ -154,9 +155,9 @@ estos estados:
 - **Estimado:** Nexo la calculó a partir de precios públicos. Se presenta siempre
   como estimación.
 - **Cubierto por suscripción:** la petición no tiene coste marginal porque el plan
-  la cubre, y el proveedor no expone cuánta cuota se ha consumido. Mostrar cero
-  euros aquí es cierto y engañoso a la vez, así que la interfaz dice que el coste
-  es cero **y** que el consumo de cuota es desconocido.
+  la cubre. Los tokens sí se conocen, pero el proveedor no expone cuánta cuota se
+  ha consumido. Mostrar cero euros aquí es cierto y engañoso a la vez, así que la
+  interfaz dice que el coste es cero **y** que el consumo de cuota es desconocido.
 - **No disponible:** el proveedor no informa y Nexo no puede estimar con
   fiabilidad. No se inventa una cifra.
 

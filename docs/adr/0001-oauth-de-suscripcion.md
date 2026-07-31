@@ -71,11 +71,42 @@ Publicar y distribuir instaladores firmados de una herramienta cuya función cen
 
 **Mitigación.** La distribución se aplaza a la fase 5 y se decide entonces, por separado. Construir no obliga a publicar.
 
-### 5. Observabilidad degradada
+### 5. Observabilidad parcial
 
-La ruta de suscripción no informa de tokens, cuota ni coste, y su catálogo es un subconjunto con capacidades recortadas. Esto choca con que la observabilidad es la otra mitad del producto.
+La ruta de suscripción no informa de cuota ni de coste, y su catálogo es un subconjunto con capacidades recortadas. Esto choca con que la observabilidad es la otra mitad del producto. (Sí informa de tokens: ver la validación más abajo, que corrigió esta suposición.)
 
 **Mitigación.** El modelo de métricas incorpora un estado de contabilidad **«cubierto por suscripción»**, distinto de «reportado», «estimado» y «no disponible». Mostrar cero euros sin más sería cierto y engañoso a la vez: la interfaz debe decir que el coste marginal es cero y que la cuota consumida es desconocida. El catálogo se indexa por proveedor **y** tipo de credencial, para que el usuario nunca descubra en tiempo de ejecución que un modelo no está disponible por la vía que está usando.
+
+## Validación contra una cuenta real
+
+Ejercida el **2026-07-31** con una suscripción de ChatGPT propia. Resultado:
+**la vía funciona.**
+
+| Qué se quería confirmar | Resultado |
+| --- | --- |
+| Que `auth.openai.com` acepta el flujo PKCE con `originator=nexo` | ✅ Sí. No hace falta suplantar a otro cliente. |
+| Que el backend de ChatGPT atiende la inferencia | ✅ Sí, con streaming y sin él. |
+| Qué modelos responden | ✅ `gpt-5.5`, `gpt-5.4` y `gpt-5.4-mini`. |
+| Si llega información de uso | ✅ **Sí, y más de lo previsto:** tokens de entrada, salida, razonamiento y caché. |
+| Si llega información de cuota | ❌ No se ha observado ninguna. |
+| Caducidad del access token | ~10 días, con refresh token disponible. |
+
+Dos correcciones al diseño que salieron de esta prueba:
+
+1. **El backend responde SSE sin cabecera `content-type`.** La guarda que
+   comprobaba `text/event-stream` rechazaba respuestas perfectamente válidas: un
+   falso positivo de la propia protección, que reportaba «vía rota» cuando la vía
+   funcionaba. Ahora la ausencia de cabecera se acepta y solo se rechaza un tipo
+   declarado incompatible con SSE.
+
+2. **La observabilidad no está tan degradada como se asumió.** El riesgo 5 de
+   este documento daba por perdidas las métricas de tokens en esta vía, y no es
+   así. Lo que sigue siendo invisible es la cuota del plan, así que el estado de
+   contabilidad `Subscription` sigue siendo el correcto: coste marginal cero,
+   tokens conocidos, cuota desconocida.
+
+Lo que esta validación **no** demuestra: que la vía siga funcionando mañana. Sigue
+siendo un mecanismo no soportado y los riesgos 1 a 4 se mantienen intactos.
 
 ## Consecuencias arquitectónicas
 

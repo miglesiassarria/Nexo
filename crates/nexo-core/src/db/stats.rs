@@ -193,6 +193,9 @@ impl Db {
 
     /// Peticiones de una aplicación dentro de una ventana. Reconstruye el
     /// contador de límites al arrancar.
+    ///
+    /// Solo cuenta inferencia: una consulta de catálogo no consume cuota del
+    /// proveedor, así que no puede consumir el límite local.
     pub fn requests_in_window(
         &self,
         app_id: &str,
@@ -204,14 +207,22 @@ impl Db {
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM requests
              WHERE app_id = ?1 AND provider_id = ?2 AND credential_kind = ?3
-               AND ts >= ?4 AND status != 'error'",
+               AND ts >= ?4 AND status != 'error' AND operation = 'chat'",
             params![app_id, provider_id, credential_kind, since_ms],
             |r| r.get(0),
         )?)
     }
 
     /// Resumen agregado para el panel.
-    pub fn usage_summary(&self, since_ms: i64, group: GroupBy) -> Result<Vec<UsageBucket>> {
+    ///
+    /// `operation` filtra por tipo: `Some("chat")` deja fuera las consultas de
+    /// catálogo, que no consumen nada y falsearían los totales de uso.
+    pub fn usage_summary(
+        &self,
+        since_ms: i64,
+        group: GroupBy,
+        operation: Option<&str>,
+    ) -> Result<Vec<UsageBucket>> {
         let column = group.column();
         let conn = self.lock();
         let sql = format!(
@@ -224,12 +235,12 @@ impl Db {
                     SUM(latency_sum_ms), MAX(latency_max_ms),
                     SUM(ttft_sum_ms), SUM(ttft_count)
              FROM usage_hourly
-             WHERE hour >= ?1
+             WHERE hour >= ?1 AND (?2 IS NULL OR operation = ?2)
              GROUP BY bucket
              ORDER BY SUM(requests) DESC"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![util::hour_floor_ms(since_ms)], |r| {
+        let rows = stmt.query_map(params![util::hour_floor_ms(since_ms), operation], |r| {
             let requests: i64 = r.get(1)?;
             let latency_sum: i64 = r.get(12)?;
             let ttft_sum: i64 = r.get(14)?;
@@ -262,7 +273,7 @@ impl Db {
             "SELECT r.id, r.ts, COALESCE(a.name, r.app_id), r.provider_id,
                     r.credential_kind, r.public_model, r.status, r.error_kind,
                     r.latency_ms, r.ttft_ms, r.total_tokens, r.usage_source,
-                    r.cost_micros, r.cost_basis, r.fallback_from
+                    r.cost_micros, r.cost_basis, r.fallback_from, r.operation
              FROM requests r LEFT JOIN apps a ON a.id = r.app_id
              ORDER BY r.ts DESC LIMIT ?1",
         )?;
@@ -283,6 +294,7 @@ impl Db {
                 cost_micros: r.get(12)?,
                 cost_basis: r.get(13)?,
                 fallback_from: r.get(14)?,
+                operation: r.get(15)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -379,6 +391,7 @@ pub struct RequestRow {
     pub cost_micros: Option<i64>,
     pub cost_basis: String,
     pub fallback_from: Option<String>,
+    pub operation: String,
 }
 
 #[cfg(test)]
@@ -424,7 +437,7 @@ mod tests {
         let db = db();
         db.record_request(&event("api_key", CostBasis::Estimated, Some(1000)))
             .unwrap();
-        let summary = db.usage_summary(0, GroupBy::App).unwrap();
+        let summary = db.usage_summary(0, GroupBy::App, None).unwrap();
         assert_eq!(summary.len(), 1);
         assert_eq!(summary[0].requests, 1);
         assert_eq!(summary[0].total_tokens, 30);
@@ -439,7 +452,7 @@ mod tests {
             .unwrap();
         db.record_request(&event("api_key", CostBasis::Reported, Some(500)))
             .unwrap();
-        let s = &db.usage_summary(0, GroupBy::App).unwrap()[0];
+        let s = &db.usage_summary(0, GroupBy::App, None).unwrap()[0];
         assert_eq!(s.cost_estimated_micros, 1000);
         assert_eq!(s.cost_reported_micros, 500);
     }
@@ -449,7 +462,7 @@ mod tests {
         let db = db();
         db.record_request(&event("subscription_oauth", CostBasis::Subscription, None))
             .unwrap();
-        let s = &db.usage_summary(0, GroupBy::App).unwrap()[0];
+        let s = &db.usage_summary(0, GroupBy::App, None).unwrap()[0];
         assert_eq!(s.subscription_requests, 1);
         assert_eq!(s.cost_reported_micros, 0);
         assert_eq!(s.cost_estimated_micros, 0);
@@ -483,7 +496,7 @@ mod tests {
         db.record_request(&a).unwrap();
         db.record_request(&b).unwrap();
 
-        let s = &db.usage_summary(0, GroupBy::App).unwrap()[0];
+        let s = &db.usage_summary(0, GroupBy::App, None).unwrap()[0];
         assert_eq!(s.local_limited, 1);
         assert_eq!(s.rate_limited, 1);
         assert_eq!(s.errors, 2);
@@ -512,7 +525,7 @@ mod tests {
             .unwrap();
         db.record_request(&event("subscription_oauth", CostBasis::Subscription, None))
             .unwrap();
-        let s = db.usage_summary(0, GroupBy::CredentialKind).unwrap();
+        let s = db.usage_summary(0, GroupBy::CredentialKind, None).unwrap();
         assert_eq!(s.len(), 2);
     }
 
@@ -524,13 +537,13 @@ mod tests {
         db.record_request(&old).unwrap();
         db.record_content(&old.id, old.ts, "p", "c").unwrap();
 
-        let before = db.usage_summary(old.ts - 1000, GroupBy::App).unwrap();
+        let before = db.usage_summary(old.ts - 1000, GroupBy::App, None).unwrap();
         assert_eq!(before[0].requests, 1);
 
         let (requests, content) = db.apply_retention(90, 7).unwrap();
         assert_eq!((requests, content), (1, 1));
 
-        let after = db.usage_summary(old.ts - 1000, GroupBy::App).unwrap();
+        let after = db.usage_summary(old.ts - 1000, GroupBy::App, None).unwrap();
         assert_eq!(
             after[0].requests, 1,
             "el rollup debe sobrevivir al borrado del detalle"
@@ -544,6 +557,6 @@ mod tests {
         db.record_request(&event("api_key", CostBasis::Estimated, Some(10)))
             .unwrap();
         db.purge_all_stats().unwrap();
-        assert!(db.usage_summary(0, GroupBy::App).unwrap().is_empty());
+        assert!(db.usage_summary(0, GroupBy::App, None).unwrap().is_empty());
     }
 }

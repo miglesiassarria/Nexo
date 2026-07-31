@@ -353,7 +353,7 @@ async fn every_request_lands_in_the_statistics() {
     let summary = h
         .nexo
         .db()
-        .usage_summary(0, nexo_core::db::stats::GroupBy::CredentialKind)
+        .usage_summary(0, nexo_core::db::stats::GroupBy::CredentialKind, Some("chat"))
         .unwrap();
     assert_eq!(summary.len(), 1);
     assert_eq!(summary[0].requests, 2);
@@ -369,7 +369,7 @@ async fn rejected_requests_are_also_recorded_and_distinguishable() {
     let summary = h
         .nexo
         .db()
-        .usage_summary(0, nexo_core::db::stats::GroupBy::App)
+        .usage_summary(0, nexo_core::db::stats::GroupBy::App, Some("chat"))
         .unwrap();
     assert_eq!(summary[0].requests, 2);
     assert_eq!(summary[0].errors, 1);
@@ -378,4 +378,89 @@ async fn rejected_requests_are_also_recorded_and_distinguishable() {
         "un límite de Nexo no puede confundirse con un 429 del proveedor"
     );
     assert_eq!(summary[0].rate_limited, 0);
+}
+
+#[tokio::test]
+async fn an_empty_model_list_leaves_a_diagnosable_trace() {
+    // Reproduce el caso que costó tres intentos diagnosticar: la aplicación se
+    // autentica bien pero no tiene ninguna vía concedida, así que el cliente
+    // recibe cero modelos y muestra «no se encontraron modelos» sin más pista.
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+    let issued = nexo.db().create_app("sin permisos", None).expect("app");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    let body: Value = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/v1/models"))
+        .bearer_auth(&issued.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    // El panel debe poder explicar por qué.
+    let recent = nexo.db().recent_requests(10).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].operation, "models");
+    assert_eq!(recent[0].status, "error");
+    assert_eq!(
+        recent[0].error_kind.as_deref(),
+        Some("no_grants"),
+        "el motivo del catálogo vacío tiene que quedar registrado"
+    );
+
+    // Y no puede contaminar los totales de inferencia.
+    let chat = nexo
+        .db()
+        .usage_summary(0, nexo_core::db::stats::GroupBy::App, Some("chat"))
+        .unwrap();
+    assert!(chat.is_empty(), "una consulta de catálogo no es una petición de uso");
+}
+
+#[tokio::test]
+async fn a_successful_catalog_query_is_recorded_without_an_error() {
+    let h = start().await;
+    h.http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap();
+
+    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let models: Vec<_> = recent.iter().filter(|r| r.operation == "models").collect();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].status, "ok");
+    assert_eq!(models[0].error_kind, None);
+    assert!(models[0].public_model.contains("1 modelo"));
+}
+
+#[tokio::test]
+async fn catalog_queries_do_not_consume_the_app_limit() {
+    let h = start_with_limit(Some(1)).await;
+    // Diez consultas de catálogo no deben gastar la única petición permitida.
+    for _ in 0..10 {
+        h.http
+            .get(format!("{}/v1/models", h.base))
+            .bearer_auth(&h.token)
+            .send()
+            .await
+            .unwrap();
+    }
+    assert!(
+        h.post_chat(h.simple_body(false)).await.status().is_success(),
+        "el límite es de inferencia, no de consultas de catálogo"
+    );
 }

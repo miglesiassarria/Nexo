@@ -25,7 +25,7 @@ Primera versión funcional. Lo que hay hoy:
 | --- | --- |
 | Gateway `chat/completions` con y sin streaming | ✅ |
 | Traducción `chat/completions` ↔ formato Responses | ✅ |
-| ChatGPT por OAuth de suscripción | ✅ implementado, **pendiente de validar con una cuenta real** |
+| ChatGPT por OAuth de suscripción | ✅ **validado contra una cuenta real** el 2026-07-31 |
 | OpenAI por API key, y como respaldo automático | ✅ |
 | Proveedor mock para probar sin credenciales | ✅ |
 | Tokens por aplicación, revocables, con límites | ✅ |
@@ -77,7 +77,7 @@ Los artefactos aparecen bajo `target/release/`:
 
 Para generar solo uno: `npm run tauri build -- --bundles app` (o `dmg`, `nsis`, `deb`, `appimage`).
 
-> El bundle DMG falla si ya hay un volumen `Nexo` montado. Desmóntalo con `hdiutil detach /Volumes/Nexo` y repite.
+> El bundle DMG falla si queda un volumen `Nexo` montado o un `rw.*.dmg` a medias de un intento anterior. Se arregla con `hdiutil detach /Volumes/Nexo` y `rm -f target/release/bundle/*/rw.*.dmg`. Ojo: construir solo el DMG (`--bundles dmg`) borra el `Nexo.app` existente, así que si quieres los dos, pídelos en la misma orden.
 
 Nada de esto se versiona: `target/`, `node_modules/`, `dist/` y los instaladores están en [.gitignore](.gitignore).
 
