@@ -36,7 +36,9 @@ if pgrep -f "Nexo.app/Contents/MacOS/nexo" >/dev/null 2>&1; then
   sleep 1
 fi
 
-echo "▸ Instalando en $target…"
+# Llaves obligatorias: pegar un carácter multibyte a $var hace que bash lo
+# lea como parte del nombre y falle con `unbound variable`.
+echo "▸ Instalando en ${target}…"
 rm -rf "$target"
 ditto "$app" "$target"
 
