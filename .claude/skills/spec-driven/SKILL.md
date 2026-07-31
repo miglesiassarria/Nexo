@@ -135,9 +135,9 @@ Ejecuta las tareas en orden. Por cada una:
 Al terminar:
 
 1. Ejecuta la verificación completa del repositorio.
-2. **Genera el artefacto de macOS** con `npm run tauri build`, e informa de la ruta y
-   la hora. Las pruebas verdes no demuestran que la aplicación empaquete, y lo que el
-   usuario instala es el paquete.
+2. **Deja la aplicación de macOS instalada** con `npm run app:install`, e informa de
+   la hora del build y de la de lo instalado. Compilar no es instalar, y varias veces
+   se ha probado una versión antigua creyendo que era la nueva.
 3. Comprueba **uno por uno** los criterios de aceptación de `spec.md`, informando del
    resultado real. Si alguno no se cumple, se dice, no se maquilla.
 
@@ -145,11 +145,11 @@ Al terminar:
 
 ```bash
 cargo test --workspace && cargo clippy --workspace --all-targets && npm run check
-npm run tauri build
+npm run app:install
 ```
 
-Una especificación no está terminada mientras esto no pase **y** el artefacto de
-macOS no esté reconstruido.
+Una especificación no está terminada mientras esto no pase **y** la aplicación no
+quede instalada.
 
 ## Cuándo saltarse el ciclo
 

@@ -8,7 +8,8 @@
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "app:install": "bash scripts/install-macos.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

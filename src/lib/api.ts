@@ -64,6 +64,14 @@ export interface Limit {
   max_output_tokens: number | null;
 }
 
+export interface GrantableRoute {
+  provider_id: string;
+  credential_kind: string;
+  connected: boolean;
+  requires_limit: boolean;
+  models: number;
+}
+
 export interface AppDetail {
   grants: Grant[];
   limits: Limit[];
@@ -197,6 +205,7 @@ export const api = {
   revokeApp: (appId: string) => invoke<void>("revoke_app", { appId }),
   deleteApp: (appId: string) => invoke<void>("delete_app", { appId }),
   appDetail: (appId: string) => invoke<AppDetail>("app_detail", { appId }),
+  grantableRoutes: () => invoke<GrantableRoute[]>("grantable_routes"),
   setAppAccess: (args: {
     appId: string;
     providerId: string;

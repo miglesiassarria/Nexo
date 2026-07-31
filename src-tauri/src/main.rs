@@ -49,6 +49,7 @@ fn main() {
             commands::revoke_app,
             commands::delete_app,
             commands::app_detail,
+            commands::grantable_routes,
             commands::set_app_access,
             commands::catalog,
             commands::refresh_catalog,

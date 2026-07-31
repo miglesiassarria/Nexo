@@ -6,17 +6,17 @@
     kindLabel,
     type App,
     type AppDetail,
+    type GrantableRoute,
     type IssuedApp,
   } from "../api";
 
   let { onchange }: { onchange: () => void } = $props();
 
-  /** Vías que una aplicación puede tener concedidas. */
-  const routes = [
-    { provider: "openai", kind: "subscription_oauth" },
-    { provider: "openai", kind: "api_key" },
-    { provider: "mock", kind: "mock" },
-  ];
+  /**
+   * Vías concedibles. Se piden al núcleo, que las deriva del catálogo: llevarlas
+   * escritas aquí hizo que LM Studio quedara sin poder autorizarse al añadirlo.
+   */
+  let routes = $state<GrantableRoute[]>([]);
 
   let apps = $state<App[]>([]);
   let details = $state<Record<string, AppDetail>>({});
@@ -28,6 +28,7 @@
   async function load() {
     try {
       apps = await api.listApps();
+      routes = await api.grantableRoutes();
       error = null;
       for (const app of apps) {
         details[app.id] = await api.appDetail(app.id);
@@ -231,9 +232,9 @@
 
       {#if expanded === app.id}
         <div class="routes">
-          {#each routes as route (route.provider + route.kind)}
-            {@const grant = grantFor(app.id, route.provider, route.kind)}
-            {@const limit = limitFor(app.id, route.provider, route.kind)}
+          {#each routes as route (route.provider_id + route.credential_kind)}
+            {@const grant = grantFor(app.id, route.provider_id, route.credential_kind)}
+            {@const limit = limitFor(app.id, route.provider_id, route.credential_kind)}
             <div class="route">
               <label class="check">
                 <input
@@ -242,17 +243,23 @@
                   onchange={(e) =>
                     toggleRoute(
                       app,
-                      route.provider,
-                      route.kind,
+                      route.provider_id,
+                      route.credential_kind,
                       e.currentTarget.checked,
                     )}
                 />
                 <span>
-                  {route.provider} · {kindLabel(route.kind)}
+                  {route.provider_id} · {kindLabel(route.credential_kind)}
                 </span>
+                <span class="badge">{route.models} modelo(s)</span>
+                {#if !route.connected}
+                  <span class="badge warn" title="Conéctala en Proveedores">
+                    sin cuenta
+                  </span>
+                {/if}
               </label>
 
-              {#if grant && route.kind === "subscription_oauth"}
+              {#if grant && route.requires_limit}
                 <div class="limit">
                   <span class="muted small">Límite obligatorio:</span>
                   <input
@@ -262,8 +269,8 @@
                     onchange={(e) =>
                       updateLimit(
                         app,
-                        route.provider,
-                        route.kind,
+                        route.provider_id,
+                        route.credential_kind,
                         Number(e.currentTarget.value),
                         limit?.window_seconds ?? 3600,
                       )}
@@ -274,8 +281,8 @@
                     onchange={(e) =>
                       updateLimit(
                         app,
-                        route.provider,
-                        route.kind,
+                        route.provider_id,
+                        route.credential_kind,
                         limit?.max_requests ?? 60,
                         Number(e.currentTarget.value),
                       )}

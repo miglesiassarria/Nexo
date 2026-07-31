@@ -726,6 +726,54 @@ impl Nexo {
         Ok(out)
     }
 
+    /// Vías a las que se puede conceder acceso, derivadas del catálogo.
+    ///
+    /// Existe porque la interfaz llevaba esta lista escrita a mano y se quedó sin
+    /// `lmstudio` al añadirlo: los modelos locales estaban detectados y en catálogo,
+    /// pero era imposible autorizarlos. Derivarla de los datos hace que un proveedor
+    /// nuevo aparezca sin tocar la interfaz.
+    pub fn grantable_routes(&self) -> Result<Vec<GrantableRoute>> {
+        let accounts = self.db.accounts()?;
+        let mut seen: Vec<GrantableRoute> = Vec::new();
+
+        for row in self.db.catalog_rows()? {
+            let kind = CredentialKind::parse(&row.credential_kind)
+                .unwrap_or(CredentialKind::ApiKey);
+
+            if let Some(existing) = seen
+                .iter_mut()
+                .find(|r| r.provider_id == row.provider_id && r.credential_kind == row.credential_kind)
+            {
+                existing.models += 1;
+                continue;
+            }
+
+            let connected = kind == CredentialKind::Mock
+                || accounts.iter().any(|a| {
+                    a.provider_id == row.provider_id
+                        && a.credential_kind == kind
+                        && a.status == "active"
+                });
+
+            seen.push(GrantableRoute {
+                provider_id: row.provider_id.clone(),
+                credential_kind: row.credential_kind.clone(),
+                connected,
+                requires_limit: kind.requires_app_limit(),
+                models: 1,
+            });
+        }
+
+        // Las utilizables primero: son las que el usuario quiere conceder.
+        seen.sort_by(|a, b| {
+            b.connected
+                .cmp(&a.connected)
+                .then_with(|| a.provider_id.cmp(&b.provider_id))
+                .then_with(|| a.credential_kind.cmp(&b.credential_kind))
+        });
+        Ok(seen)
+    }
+
     // -- Ciclo de una petición --------------------------------------------
 
     /// Resuelve modelo, permisos, límites y credencial. No envía nada todavía.
@@ -1173,6 +1221,18 @@ impl Collector {
     }
 }
 
+/// Una vía a la que se puede conceder acceso.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrantableRoute {
+    pub provider_id: String,
+    pub credential_kind: String,
+    /// Si hay cuenta activa. Sin ella, conceder acceso no sirve de nada todavía.
+    pub connected: bool,
+    /// Si conceder esta vía obliga a fijar un límite (ADR 0001).
+    pub requires_limit: bool,
+    pub models: usize,
+}
+
 /// Resultado de refrescar el catálogo de una vía concreta.
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogRefresh {
@@ -1254,6 +1314,85 @@ mod tests {
         assert!(rows.iter().any(|r| r.credential_kind == "subscription_oauth"));
         assert!(rows.iter().any(|r| r.credential_kind == "api_key"));
         assert!(rows.iter().any(|r| r.credential_kind == "mock"));
+    }
+
+    #[test]
+    fn grantable_routes_cover_every_route_in_the_catalog() {
+        // Reproduce el fallo del 2026-07-31: la interfaz llevaba la lista de vías
+        // escrita a mano y se quedó sin `lmstudio`, así que era imposible conceder
+        // acceso a los modelos locales aunque estuvieran detectados y en catálogo.
+        // Derivarla del catálogo hace que un proveedor nuevo aparezca solo.
+        let n = nexo();
+        n.db()
+            .replace_models(
+                "lmstudio",
+                CredentialKind::Local,
+                &[crate::provider::ModelDescriptor {
+                    api_id: "modelo-local".into(),
+                    public_name: "lmstudio/modelo-local".into(),
+                    caps: crate::provider::Capabilities {
+                        text: true,
+                        streaming: true,
+                        ..Default::default()
+                    },
+                    limits: Default::default(),
+                    accounting: Accounting::Local,
+                    pricing: None,
+                }],
+                "prueba",
+            )
+            .unwrap();
+
+        let routes = n.grantable_routes().unwrap();
+        let keys: Vec<String> = routes
+            .iter()
+            .map(|r| format!("{}:{}", r.provider_id, r.credential_kind))
+            .collect();
+
+        for expected in [
+            "openai:subscription_oauth",
+            "openai:api_key",
+            "lmstudio:local",
+            "mock:mock",
+        ] {
+            assert!(
+                keys.contains(&expected.to_string()),
+                "falta la vía {expected} entre las concedibles: {keys:?}"
+            );
+        }
+
+        let local = routes
+            .iter()
+            .find(|r| r.provider_id == "lmstudio")
+            .expect("lmstudio");
+        assert_eq!(local.models, 1);
+        assert!(!local.requires_limit, "la vía local no exige límite");
+    }
+
+    #[test]
+    fn grantable_routes_say_which_ones_have_an_account_connected() {
+        let n = nexo();
+        let routes = n.grantable_routes().unwrap();
+
+        let sub = routes
+            .iter()
+            .find(|r| r.credential_kind == "subscription_oauth")
+            .unwrap();
+        assert!(!sub.connected, "sin cuenta conectada todavía");
+        assert!(sub.requires_limit, "la vía de suscripción sí exige límite");
+
+        let mock = routes.iter().find(|r| r.provider_id == "mock").unwrap();
+        assert!(mock.connected, "el proveedor de pruebas no necesita cuenta");
+
+        n.connect_openai_api_key("sk-test", None).unwrap();
+        let routes = n.grantable_routes().unwrap();
+        assert!(
+            routes
+                .iter()
+                .find(|r| r.credential_kind == "api_key")
+                .unwrap()
+                .connected
+        );
     }
 
     #[test]

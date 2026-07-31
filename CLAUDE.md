@@ -25,17 +25,26 @@ Nada se considera terminado sin que esto pase, ejecutado de verdad:
 cargo test --workspace && cargo clippy --workspace --all-targets && npm run check
 ```
 
-**Y sin generar el artefacto de macOS:**
+**Y sin dejar la aplicación de macOS compilada e instalada:**
 
 ```bash
-npm run tauri build
+npm run app:install
 ```
 
-Toda implementación termina con `Nexo.app` y el `.dmg` reconstruidos en
-`target/release/bundle/`, e informando de la ruta y la hora del build. Que las
-pruebas pasen no demuestra que la aplicación compile y empaquete: son dos cosas
-distintas, y la que el usuario instala es la segunda. Si el build falla o se salta,
-se dice; no se da por terminado.
+Toda implementación termina así, informando de la hora del build **y** de la de lo
+instalado en `/Applications`. Tres cosas distintas que se confunden con facilidad:
+
+1. Las pruebas pasan.
+2. La aplicación compila y empaqueta.
+3. El usuario tiene esa versión instalada.
+
+Las tres han fallado por separado en este proyecto, y varias veces se probó una
+versión antigua creyendo que era la nueva. **Solo la tercera es «terminado».** Si
+falla o se salta cualquiera de ellas, se dice; no se da por hecho.
+
+`npm run tauri build` a secas solo cubre el punto 2, y sirve cuando no se quiere
+tocar lo instalado. El guion de instalación cierra Nexo si está en marcha: no se
+pierde nada, porque los datos y las credenciales viven fuera de la aplicación.
 
 Recordatorio de fontanería: construir solo el DMG (`--bundles dmg`) **borra** el
 `Nexo.app` existente, y el empaquetado falla si queda un volumen `Nexo` montado o un

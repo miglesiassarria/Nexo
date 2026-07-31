@@ -80,6 +80,12 @@ Los artefactos aparecen bajo `target/release/`:
 
 Para generar solo uno: `npm run tauri build -- --bundles app` (o `dmg`, `nsis`, `deb`, `appimage`).
 
+Para compilar **e instalar** en `/Applications` de una vez, dejándolo en marcha:
+
+```bash
+npm run app:install
+```
+
 > El bundle DMG falla si queda un volumen `Nexo` montado o un `rw.*.dmg` a medias de un intento anterior. Se arregla con `hdiutil detach /Volumes/Nexo` y `rm -f target/release/bundle/*/rw.*.dmg`. Ojo: construir solo el DMG (`--bundles dmg`) borra el `Nexo.app` existente, así que si quieres los dos, pídelos en la misma orden.
 
 Nada de esto se versiona: `target/`, `node_modules/`, `dist/` y los instaladores están en [.gitignore](.gitignore).
@@ -119,8 +125,9 @@ Dos reglas que hacen que esto sirva de algo:
 - **Lo que se descubre vuelve al documento.** Si al implementar resulta que la
   especificación estaba equivocada, se corrige y se anota qué se aprendió. Ya ha
   pasado tres veces en este proyecto.
-- **Toda implementación acaba con el artefacto de macOS reconstruido.** Las pruebas
-  verdes no demuestran que la aplicación empaquete, y lo que se instala es el paquete.
+- **Toda implementación acaba con la aplicación instalada**, no solo compilada
+  (`npm run app:install`). Que las pruebas pasen, que el paquete se genere y que sea
+  la versión instalada son tres cosas distintas.
 
 Las especificaciones viven en [`specs/`](specs/), la metodología completa en
 [`.claude/skills/spec-driven/SKILL.md`](.claude/skills/spec-driven/SKILL.md), y las

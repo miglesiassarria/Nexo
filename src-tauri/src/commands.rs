@@ -8,7 +8,7 @@ use nexo_core::db::{Account, CatalogRow};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
 use nexo_core::provider::CredentialKind;
-use nexo_core::service::{CatalogRefresh, GatewayStatus};
+use nexo_core::service::{CatalogRefresh, GatewayStatus, GrantableRoute};
 use nexo_core::util;
 use serde::Serialize;
 use serde_json::Value;
@@ -172,6 +172,12 @@ pub fn revoke_app(state: State<'_, AppState>, app_id: String) -> CmdResult<()> {
 #[tauri::command]
 pub fn delete_app(state: State<'_, AppState>, app_id: String) -> CmdResult<()> {
     state.nexo.db().delete_app(&app_id).map_err(map_err)
+}
+
+/// Vías a las que se puede conceder acceso, derivadas del catálogo.
+#[tauri::command]
+pub fn grantable_routes(state: State<'_, AppState>) -> CmdResult<Vec<GrantableRoute>> {
+    state.nexo.grantable_routes().map_err(map_err)
 }
 
 #[derive(Serialize)]
