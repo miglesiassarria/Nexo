@@ -73,7 +73,8 @@ Dos spikes de código, no documentos.
 
 - [x] Interfaz de configuración, proveedores, aplicaciones y modelos.
 - [x] Panel de estadísticas con comparativas y últimas peticiones.
-- [x] Gestión de retención y borrado de estadísticas.
+- [x] Gestión de retención y borrado de estadísticas, aplicada sola en cada
+      arranque además de a demanda desde el botón.
 - [ ] Aprobación interactiva de conexiones nuevas.
 - [ ] Perfiles y reglas de enrutado.
 - [x] Consultas de catálogo registradas con el motivo cuando salen vacías.

@@ -105,11 +105,14 @@
         </div>
       </div>
       <p class="muted small">
-        El contenido de prompts y respuestas no se guarda por defecto. Borrar el detalle
-        no elimina los agregados horarios, así que las tendencias largas sobreviven.
+        Se aplica sola cada vez que Nexo arranca, con estos valores. El contenido de
+        prompts y respuestas no se guarda por defecto. Borrar el detalle no elimina
+        los agregados horarios, así que las tendencias largas sobreviven.
       </p>
       <div class="row">
-        <button onclick={retention}>Aplicar retención ahora</button>
+        <button onclick={retention}>
+          Aplicar ahora, sin esperar al próximo arranque
+        </button>
         <button class="danger" onclick={purge}>Borrar todas las estadísticas</button>
       </div>
     </section>

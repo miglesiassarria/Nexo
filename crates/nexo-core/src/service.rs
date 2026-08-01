@@ -63,6 +63,17 @@ impl Nexo {
         let client_version = settings.codex_client_version.clone();
         let lmstudio_url = settings.lmstudio_base_url.clone();
 
+        // La retención existía como botón en Configuración, pero nadie la
+        // pulsaba: sin esto, `requests` crece sin límite mientras la app esté
+        // instalada. Se aplica en cada arranque, con la configuración vigente.
+        // El botón se conserva para el caso de bajar la retención y querer
+        // que surta efecto ya, sin esperar al siguiente arranque.
+        if let Err(e) =
+            db.apply_retention(settings.retention_days, settings.content_retention_days)
+        {
+            tracing::warn!(error = %e, "no se pudo aplicar la retención al arrancar");
+        }
+
         let mut adapters: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
         for adapter in [
             Arc::new(ChatgptSubscriptionAdapter::with_client_version(
@@ -1805,6 +1816,69 @@ mod tests {
             Arc::new(MemorySecretStore::default()),
         )
         .unwrap()
+    }
+
+    /// La retención existía como botón en Configuración, pero nadie lo pulsaba: sin
+    /// esto, `requests` crecía sin límite mientras la app estuviera instalada
+    /// (encontrado al revisar el panel real del usuario, con datos desde el día
+    /// anterior sin ninguna poda). Se comprueba reabriendo el mismo `Db` —simulando
+    /// un reinicio— y viendo que un evento más viejo que la retención configurada
+    /// desaparece sin que nadie pulse nada.
+    #[test]
+    fn old_requests_are_pruned_automatically_on_startup() {
+        let db = Db::open_in_memory().unwrap();
+        let secrets = Arc::new(MemorySecretStore::default()) as Arc<dyn crate::secrets::SecretStore>;
+
+        // Retención corta, para no depender del valor por defecto.
+        let mut settings = db.settings().unwrap();
+        settings.retention_days = 30;
+        db.save_settings(&settings).unwrap();
+
+        // Primer arranque: no hay nada que podar todavía.
+        Nexo::new(db.clone(), secrets.clone()).unwrap();
+
+        let old_id = "req_viejo";
+        db.record_request(&crate::db::stats::RequestEvent {
+            id: old_id.into(),
+            ts: util::now_ms() - 200 * 86_400_000, // muy anterior a los 30 días
+            app_id: "app1".into(),
+            provider_id: "openai".into(),
+            credential_kind: "api_key".into(),
+            account_id: None,
+            public_model: "openai/gpt-5.5".into(),
+            api_model: "gpt-5.5".into(),
+            operation: "chat".into(),
+            streamed: false,
+            status: crate::db::stats::RequestStatus::Ok,
+            error_kind: None,
+            http_status: Some(200),
+            latency_ms: Some(100),
+            ttft_ms: None,
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+            usage_source: UsageSource::Reported,
+            cost_micros: None,
+            cost_basis: CostBasis::Reported,
+            fallback_from: None,
+            provider_usage_raw: None,
+            provider_request_id: None,
+        })
+        .unwrap();
+        assert!(
+            db.recent_requests(10).unwrap().iter().any(|r| r.id == old_id),
+            "el evento viejo debe existir antes de reiniciar"
+        );
+
+        // Segundo arranque, mismo `Db`: simula reabrir la aplicación instalada.
+        Nexo::new(db.clone(), secrets).unwrap();
+
+        assert!(
+            !db.recent_requests(50).unwrap().iter().any(|r| r.id == old_id),
+            "un reinicio debe podar lo que ya supera la retención configurada, sin \
+             que el usuario tenga que pulsar nada"
+        );
     }
 
     #[test]
