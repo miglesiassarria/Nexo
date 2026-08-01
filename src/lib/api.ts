@@ -157,6 +157,8 @@ export interface RequestRow {
   error_kind: string | null;
   latency_ms: number | null;
   ttft_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   total_tokens: number | null;
   usage_source: string;
   cost_micros: number | null;
@@ -312,10 +314,10 @@ export const api = {
 
   catalog: () => invoke<CatalogRow[]>("catalog"),
   refreshCatalog: () => invoke<CatalogRefresh[]>("refresh_catalog"),
-  usageSummary: (days: number, group: string, operation?: string) =>
-    invoke<UsageBucket[]>("usage_summary", { days, group, operation }),
-  recentRequests: (limit: number) =>
-    invoke<RequestRow[]>("recent_requests", { limit }),
+  usageSummary: (minutes: number, group: string, operation?: string) =>
+    invoke<UsageBucket[]>("usage_summary", { minutes, group, operation }),
+  recentRequests: (limit: number, minutes: number) =>
+    invoke<RequestRow[]>("recent_requests", { limit, minutes }),
 
   loadSettings: () => invoke<Settings>("load_settings"),
   saveSettings: (settings: Settings) =>

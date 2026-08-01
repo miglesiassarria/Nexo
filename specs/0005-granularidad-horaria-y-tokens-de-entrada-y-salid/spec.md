@@ -1,6 +1,6 @@
 # 0005 · Periodos por horas y tokens de entrada/salida en el panel
 
-- **Estado:** tasks
+- **Estado:** build
 - **Creada:** 2026-08-01
 - **Pedida por:** el usuario, tras revisar el panel («Panel») y comprobar en la
   base de datos real que «Últimas peticiones» no filtra por tiempo y que la

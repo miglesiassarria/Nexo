@@ -263,7 +263,7 @@ async fn usage_that_arrives_after_finished_is_recorded_once_and_with_its_tokens(
     assert!(resp.status().is_success());
     let raw = resp.text().await.unwrap();
 
-    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let recent = h.nexo.db().recent_requests(0, 10).unwrap();
     assert_eq!(
         recent.len(),
         1,
@@ -482,7 +482,7 @@ async fn time_to_first_token_is_measured_from_the_start_of_the_request() {
     let row = h
         .nexo
         .db()
-        .recent_requests(5)
+        .recent_requests(0, 5)
         .unwrap()
         .into_iter()
         .find(|r| r.operation == "chat")
@@ -607,7 +607,7 @@ async fn every_request_lands_in_the_statistics() {
     h.post_chat(h.simple_body(true)).await.text().await.unwrap();
     h.post_chat(h.simple_body(false)).await.text().await.unwrap();
 
-    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let recent = h.nexo.db().recent_requests(0, 10).unwrap();
     assert_eq!(recent.len(), 2);
     for row in &recent {
         assert_eq!(row.status, "ok");
@@ -678,7 +678,7 @@ async fn an_empty_model_list_leaves_a_diagnosable_trace() {
     assert!(body["data"].as_array().unwrap().is_empty());
 
     // El panel debe poder explicar por qué.
-    let recent = nexo.db().recent_requests(10).unwrap();
+    let recent = nexo.db().recent_requests(0, 10).unwrap();
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].operation, "models");
     assert_eq!(recent[0].status, "error");
@@ -706,7 +706,7 @@ async fn a_successful_catalog_query_is_recorded_without_an_error() {
         .await
         .unwrap();
 
-    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let recent = h.nexo.db().recent_requests(0, 10).unwrap();
     let models: Vec<_> = recent.iter().filter(|r| r.operation == "models").collect();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].status, "ok");
@@ -856,7 +856,7 @@ async fn lmstudio_chat_works_and_is_recorded_without_a_limit() {
     assert_eq!(body["usage"]["nexo"]["usage_source"], "reported");
     assert!(body["usage"]["total_tokens"].as_u64().unwrap() > 0);
 
-    let recent = h.nexo.db().recent_requests(10).unwrap();
+    let recent = h.nexo.db().recent_requests(0, 10).unwrap();
     let row = recent
         .iter()
         .find(|r| r.operation == "chat")
@@ -924,7 +924,7 @@ async fn lmstudio_streaming_reassembles_to_the_same_text() {
     let ttft = h
         .nexo
         .db()
-        .recent_requests(5)
+        .recent_requests(0, 5)
         .unwrap()
         .into_iter()
         .find(|r| r.operation == "chat")
@@ -1062,7 +1062,7 @@ async fn a_local_server_that_is_down_gives_a_useful_error_not_a_generic_502() {
     // Y queda registrado, para que el panel pueda explicarlo.
     let row = nexo
         .db()
-        .recent_requests(5)
+        .recent_requests(0, 5)
         .unwrap()
         .into_iter()
         .find(|r| r.operation == "chat")
@@ -1183,7 +1183,7 @@ async fn zen_chat_with_a_free_model_works_end_to_end() {
     let row = h
         .nexo
         .db()
-        .recent_requests(5)
+        .recent_requests(0, 5)
         .unwrap()
         .into_iter()
         .find(|r| r.operation == "chat")
@@ -1254,7 +1254,7 @@ async fn zen_streaming_with_a_free_model_reassembles_correctly() {
     let rows: Vec<_> = h
         .nexo
         .db()
-        .recent_requests(20)
+        .recent_requests(0, 20)
         .unwrap()
         .into_iter()
         .filter(|r| r.operation == "chat")

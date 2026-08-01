@@ -1867,7 +1867,7 @@ mod tests {
         })
         .unwrap();
         assert!(
-            db.recent_requests(10).unwrap().iter().any(|r| r.id == old_id),
+            db.recent_requests(0, 10).unwrap().iter().any(|r| r.id == old_id),
             "el evento viejo debe existir antes de reiniciar"
         );
 
@@ -1875,7 +1875,7 @@ mod tests {
         Nexo::new(db.clone(), secrets).unwrap();
 
         assert!(
-            !db.recent_requests(50).unwrap().iter().any(|r| r.id == old_id),
+            !db.recent_requests(0, 50).unwrap().iter().any(|r| r.id == old_id),
             "un reinicio debe podar lo que ya supera la retención configurada, sin \
              que el usuario tenga que pulsar nada"
         );
@@ -2189,7 +2189,7 @@ mod tests {
         assert_eq!(text, "eco: hola mundo");
         n.finish(&prepared, &collector);
 
-        let recent = n.db().recent_requests(10).unwrap();
+        let recent = n.db().recent_requests(0, 10).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].status, "ok");
         assert_eq!(recent[0].credential_kind, "mock");

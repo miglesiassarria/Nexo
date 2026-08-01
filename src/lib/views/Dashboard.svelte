@@ -18,7 +18,7 @@
 
   let { status }: { status: GatewayStatus | null } = $props();
 
-  let days = $state(7);
+  let minutes = $state(10080);
   let group = $state("credential");
   let buckets = $state<UsageBucket[]>([]);
   let recent = $state<RequestRow[]>([]);
@@ -34,12 +34,22 @@
   async function load() {
     try {
       // Solo inferencia: una consulta de catálogo no consume nada.
-      buckets = await api.usageSummary(days, group, "chat");
-      recent = await api.recentRequests(40);
+      buckets = await api.usageSummary(minutes, group, "chat");
+      recent = await api.recentRequests(40, minutes);
       error = null;
     } catch (e) {
       error = errorText(e);
     }
+  }
+
+  function periodLabel(mins: number): string {
+    if (mins < 60) return `últimos ${mins} min`;
+    if (mins < 1440) {
+      const h = mins / 60;
+      return h === 1 ? "última hora" : `últimas ${h} horas`;
+    }
+    const d = mins / 1440;
+    return d === 1 ? "último día" : `últimos ${d} días`;
   }
 
   const totals = $derived({
@@ -60,7 +70,7 @@
   }
 
   $effect(() => {
-    void days;
+    void minutes;
     void group;
     load();
   });
@@ -78,7 +88,7 @@
   {/if}
 
   <div class="tiles">
-    {@render tile("Peticiones", `${totals.requests}`, `últimos ${days} días`)}
+    {@render tile("Peticiones", `${totals.requests}`, periodLabel(minutes))}
     {@render tile(
       "Cubiertas por suscripción",
       `${totals.subscription}`,
@@ -109,11 +119,15 @@
             <option value={g.id}>{g.label}</option>
           {/each}
         </select>
-        <select bind:value={days} aria-label="Periodo">
-          <option value={1}>24 horas</option>
-          <option value={7}>7 días</option>
-          <option value={30}>30 días</option>
-          <option value={90}>90 días</option>
+        <select bind:value={minutes} aria-label="Periodo">
+          <option value={60}>1 hora</option>
+          <option value={120}>2 horas</option>
+          <option value={300}>5 horas</option>
+          <option value={720}>12 horas</option>
+          <option value={1440}>24 horas</option>
+          <option value={10080}>7 días</option>
+          <option value={43200}>30 días</option>
+          <option value={129600}>90 días</option>
         </select>
       </div>
     </div>
@@ -127,7 +141,8 @@
             <tr>
               <th>{groups.find((g) => g.id === group)?.label}</th>
               <th style="width: 22%">Peticiones</th>
-              <th>Tokens</th>
+              <th>Entrada</th>
+              <th>Salida</th>
               <th>Latencia media</th>
               <th>Primer token</th>
               <th>Errores</th>
@@ -144,7 +159,8 @@
                     <span>{b.requests}</span>
                   </div>
                 </td>
-                <td>{formatTokens(b.total_tokens)}</td>
+                <td>{formatTokens(b.input_tokens)}</td>
+                <td>{formatTokens(b.output_tokens)}</td>
                 <td>{formatMs(b.avg_latency_ms)}</td>
                 <td>{formatMs(b.avg_ttft_ms)}</td>
                 <td>
@@ -197,7 +213,8 @@
               <th>Tipo</th>
               <th>Estado</th>
               <th>Latencia</th>
-              <th>Tokens</th>
+              <th>Entrada</th>
+              <th>Salida</th>
               <th>Coste</th>
             </tr>
           </thead>
@@ -246,7 +263,15 @@
                 </td>
                 <td>{formatMs(r.latency_ms)}</td>
                 <td>
-                  {formatTokens(r.total_tokens)}
+                  {formatTokens(r.input_tokens)}
+                  {#if r.usage_source === "estimated"}
+                    <span class="muted" title="Estimado por Nexo">≈</span>
+                  {:else if r.usage_source === "unavailable"}
+                    <span class="muted" title="El proveedor no informa">?</span>
+                  {/if}
+                </td>
+                <td>
+                  {formatTokens(r.output_tokens)}
                   {#if r.usage_source === "estimated"}
                     <span class="muted" title="Estimado por Nexo">≈</span>
                   {:else if r.usage_source === "unavailable"}
