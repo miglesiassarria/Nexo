@@ -217,67 +217,87 @@ impl Db {
     ///
     /// `operation` filtra por tipo: `Some("chat")` deja fuera las consultas de
     /// catálogo, que no consumen nada y falsearían los totales de uso.
+    ///
+    /// El rollup `usage_hourly` está redondeado a la hora, así que no puede
+    /// responder con exactitud a una ventana más fina (un filtro de «1 hora»
+    /// podría seguir enseñando algo de hace casi 2 horas si cae en el mismo
+    /// cubo). Para ventanas de un día o menos se consulta `requests`
+    /// directamente, que tiene el timestamp exacto de cada petición. Para
+    /// ventanas más largas se sigue usando el rollup: es lo que permite que el
+    /// histórico agregado sobreviva al borrado por retención del detalle (ver
+    /// `apply_retention` y `retention_deletes_detail_but_keeps_aggregates`).
     pub fn usage_summary(
         &self,
         since_ms: i64,
         group: GroupBy,
         operation: Option<&str>,
     ) -> Result<Vec<UsageBucket>> {
-        let column = group.column();
+        const SHORT_WINDOW_MS: i64 = 86_400_000;
         let conn = self.lock();
-        let sql = format!(
-            "SELECT {column} AS bucket,
-                    SUM(requests), SUM(errors), SUM(cancels),
-                    SUM(rate_limited), SUM(local_limited),
-                    SUM(input_tokens), SUM(output_tokens), SUM(total_tokens),
-                    SUM(cost_reported_micros), SUM(cost_estimated_micros),
-                    SUM(subscription_requests),
-                    SUM(latency_sum_ms), MAX(latency_max_ms),
-                    SUM(ttft_sum_ms), SUM(ttft_count)
-             FROM usage_hourly
-             WHERE hour >= ?1 AND (?2 IS NULL OR operation = ?2)
-             GROUP BY bucket
-             ORDER BY SUM(requests) DESC"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![util::hour_floor_ms(since_ms), operation], |r| {
-            let requests: i64 = r.get(1)?;
-            let latency_sum: i64 = r.get(12)?;
-            let ttft_sum: i64 = r.get(14)?;
-            let ttft_count: i64 = r.get(15)?;
-            Ok(UsageBucket {
-                bucket: r.get(0)?,
-                requests,
-                errors: r.get(2)?,
-                cancels: r.get(3)?,
-                rate_limited: r.get(4)?,
-                local_limited: r.get(5)?,
-                input_tokens: r.get(6)?,
-                output_tokens: r.get(7)?,
-                total_tokens: r.get(8)?,
-                cost_reported_micros: r.get(9)?,
-                cost_estimated_micros: r.get(10)?,
-                subscription_requests: r.get(11)?,
-                avg_latency_ms: if requests > 0 { latency_sum / requests } else { 0 },
-                max_latency_ms: r.get(13)?,
-                avg_ttft_ms: if ttft_count > 0 { Some(ttft_sum / ttft_count) } else { None },
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let rows = if util::now_ms() - since_ms <= SHORT_WINDOW_MS {
+            let column = group.raw_column();
+            let sql = format!(
+                "SELECT {column} AS bucket,
+                        COUNT(*), SUM(status = 'error'), SUM(status = 'cancelled'),
+                        SUM(CASE WHEN error_kind = 'rate_limited' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN error_kind = 'local_limit' THEN 1 ELSE 0 END),
+                        COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(total_tokens), 0),
+                        SUM(CASE WHEN cost_basis = 'reported' THEN cost_micros ELSE 0 END),
+                        SUM(CASE WHEN cost_basis = 'estimated' THEN cost_micros ELSE 0 END),
+                        SUM(cost_basis = 'subscription'),
+                        COALESCE(SUM(latency_ms), 0), COALESCE(MAX(latency_ms), 0),
+                        COALESCE(SUM(ttft_ms), 0), SUM(ttft_ms IS NOT NULL)
+                 FROM requests
+                 WHERE ts >= ?1 AND (?2 IS NULL OR operation = ?2)
+                 GROUP BY bucket
+                 ORDER BY COUNT(*) DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let out = stmt
+                .query_map(params![since_ms, operation], usage_bucket_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            out
+        } else {
+            let column = group.column();
+            let sql = format!(
+                "SELECT {column} AS bucket,
+                        SUM(requests), SUM(errors), SUM(cancels),
+                        SUM(rate_limited), SUM(local_limited),
+                        SUM(input_tokens), SUM(output_tokens), SUM(total_tokens),
+                        SUM(cost_reported_micros), SUM(cost_estimated_micros),
+                        SUM(subscription_requests),
+                        SUM(latency_sum_ms), MAX(latency_max_ms),
+                        SUM(ttft_sum_ms), SUM(ttft_count)
+                 FROM usage_hourly
+                 WHERE hour >= ?1 AND (?2 IS NULL OR operation = ?2)
+                 GROUP BY bucket
+                 ORDER BY SUM(requests) DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let out = stmt
+                .query_map(params![util::hour_floor_ms(since_ms), operation], usage_bucket_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            out
+        };
+        Ok(rows)
     }
 
-    /// Últimas peticiones, para el diagnóstico.
-    pub fn recent_requests(&self, limit: i64) -> Result<Vec<RequestRow>> {
+    /// Últimas peticiones, para el diagnóstico. `since_ms = 0` no filtra por
+    /// tiempo (todo `ts` real es positivo).
+    pub fn recent_requests(&self, since_ms: i64, limit: i64) -> Result<Vec<RequestRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT r.id, r.ts, COALESCE(a.name, r.app_id), r.provider_id,
                     r.credential_kind, r.public_model, r.status, r.error_kind,
-                    r.latency_ms, r.ttft_ms, r.total_tokens, r.usage_source,
+                    r.latency_ms, r.ttft_ms, r.input_tokens, r.output_tokens,
+                    r.total_tokens, r.usage_source,
                     r.cost_micros, r.cost_basis, r.fallback_from, r.operation
              FROM requests r LEFT JOIN apps a ON a.id = r.app_id
-             ORDER BY r.ts DESC LIMIT ?1",
+             WHERE r.ts >= ?1
+             ORDER BY r.ts DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![limit], |r| {
+        let rows = stmt.query_map(params![since_ms, limit], |r| {
             Ok(RequestRow {
                 id: r.get(0)?,
                 ts: r.get(1)?,
@@ -289,12 +309,14 @@ impl Db {
                 error_kind: r.get(7)?,
                 latency_ms: r.get(8)?,
                 ttft_ms: r.get(9)?,
-                total_tokens: r.get(10)?,
-                usage_source: r.get(11)?,
-                cost_micros: r.get(12)?,
-                cost_basis: r.get(13)?,
-                fallback_from: r.get(14)?,
-                operation: r.get(15)?,
+                input_tokens: r.get(10)?,
+                output_tokens: r.get(11)?,
+                total_tokens: r.get(12)?,
+                usage_source: r.get(13)?,
+                cost_micros: r.get(14)?,
+                cost_basis: r.get(15)?,
+                fallback_from: r.get(16)?,
+                operation: r.get(17)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -344,6 +366,15 @@ impl GroupBy {
         }
     }
 
+    /// Igual que `column()`, pero para agrupar directamente sobre `requests`,
+    /// que no tiene una columna `hour` ya redondeada como `usage_hourly`.
+    fn raw_column(&self) -> &'static str {
+        match self {
+            Self::Hour => "CAST(ts - (ts % 3600000) AS TEXT)",
+            other => other.column(),
+        }
+    }
+
     pub fn parse(s: &str) -> Self {
         match s {
             "provider" => Self::Provider,
@@ -374,6 +405,33 @@ pub struct UsageBucket {
     pub avg_ttft_ms: Option<i64>,
 }
 
+/// Comparte el mapeo de fila entre las dos consultas de `usage_summary`
+/// (`requests` y `usage_hourly`): ambas producen las columnas en el mismo
+/// orden, solo cambia de dónde salen.
+fn usage_bucket_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UsageBucket> {
+    let requests: i64 = r.get(1)?;
+    let latency_sum: i64 = r.get(12)?;
+    let ttft_sum: i64 = r.get(14)?;
+    let ttft_count: i64 = r.get(15)?;
+    Ok(UsageBucket {
+        bucket: r.get(0)?,
+        requests,
+        errors: r.get(2)?,
+        cancels: r.get(3)?,
+        rate_limited: r.get(4)?,
+        local_limited: r.get(5)?,
+        input_tokens: r.get(6)?,
+        output_tokens: r.get(7)?,
+        total_tokens: r.get(8)?,
+        cost_reported_micros: r.get(9)?,
+        cost_estimated_micros: r.get(10)?,
+        subscription_requests: r.get(11)?,
+        avg_latency_ms: if requests > 0 { latency_sum / requests } else { 0 },
+        max_latency_ms: r.get(13)?,
+        avg_ttft_ms: if ttft_count > 0 { Some(ttft_sum / ttft_count) } else { None },
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestRow {
     pub id: String,
@@ -386,6 +444,8 @@ pub struct RequestRow {
     pub error_kind: Option<String>,
     pub latency_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     pub usage_source: String,
     pub cost_micros: Option<i64>,
@@ -548,7 +608,7 @@ mod tests {
             after[0].requests, 1,
             "el rollup debe sobrevivir al borrado del detalle"
         );
-        assert_eq!(db.recent_requests(10).unwrap().len(), 0);
+        assert_eq!(db.recent_requests(0, 10).unwrap().len(), 0);
     }
 
     #[test]
@@ -558,5 +618,55 @@ mod tests {
             .unwrap();
         db.purge_all_stats().unwrap();
         assert!(db.usage_summary(0, GroupBy::App, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn usage_summary_excludes_a_row_from_two_hours_ago_in_a_one_hour_window() {
+        let db = db();
+        let mut old = event("api_key", CostBasis::Estimated, Some(10));
+        old.ts = util::now_ms() - 2 * 3_600_000;
+        db.record_request(&old).unwrap();
+        db.record_request(&event("api_key", CostBasis::Estimated, Some(10)))
+            .unwrap();
+
+        let since = util::now_ms() - 3_600_000;
+        let s = db.usage_summary(since, GroupBy::App, None).unwrap();
+        assert_eq!(
+            s[0].requests, 1,
+            "la petición de hace 2 horas no debe contar en una ventana de 1 hora"
+        );
+    }
+
+    #[test]
+    fn recent_requests_excludes_rows_older_than_the_window() {
+        let db = db();
+        let mut old = event("api_key", CostBasis::Estimated, Some(10));
+        old.ts = util::now_ms() - 2 * 3_600_000; // hace 2 horas
+        db.record_request(&old).unwrap();
+
+        let recent = event("api_key", CostBasis::Estimated, Some(10));
+        db.record_request(&recent).unwrap();
+
+        let since = util::now_ms() - 3_600_000; // ventana de 1 hora
+        let rows = db.recent_requests(since, 10).unwrap();
+        assert!(rows.iter().any(|r| r.id == recent.id));
+        assert!(
+            !rows.iter().any(|r| r.id == old.id),
+            "una fila de hace 2 horas no debe aparecer en una ventana de 1 hora"
+        );
+    }
+
+    #[test]
+    fn recent_requests_exposes_input_and_output_tokens_separately() {
+        let db = db();
+        let mut e = event("api_key", CostBasis::Estimated, Some(10));
+        e.input_tokens = Some(10);
+        e.output_tokens = Some(20);
+        db.record_request(&e).unwrap();
+
+        let row = &db.recent_requests(0, 10).unwrap()[0];
+        assert_eq!(row.input_tokens, Some(10));
+        assert_eq!(row.output_tokens, Some(20));
+        assert_eq!(row.total_tokens, Some(30));
     }
 }

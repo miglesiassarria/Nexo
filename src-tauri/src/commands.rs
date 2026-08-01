@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
-const DAY_MS: i64 = 86_400_000;
+const MINUTE_MS: i64 = 60_000;
 
 #[tauri::command]
 pub fn gateway_status(state: State<'_, AppState>) -> CmdResult<GatewayStatus> {
@@ -314,11 +314,11 @@ pub async fn refresh_catalog(state: State<'_, AppState>) -> CmdResult<Vec<Catalo
 #[tauri::command]
 pub fn usage_summary(
     state: State<'_, AppState>,
-    days: i64,
+    minutes: i64,
     group: String,
     operation: Option<String>,
 ) -> CmdResult<Vec<UsageBucket>> {
-    let since = util::now_ms() - days.max(1) * DAY_MS;
+    let since = util::now_ms() - minutes.max(1) * MINUTE_MS;
     state
         .nexo
         .db()
@@ -327,11 +327,16 @@ pub fn usage_summary(
 }
 
 #[tauri::command]
-pub fn recent_requests(state: State<'_, AppState>, limit: i64) -> CmdResult<Vec<RequestRow>> {
+pub fn recent_requests(
+    state: State<'_, AppState>,
+    limit: i64,
+    minutes: i64,
+) -> CmdResult<Vec<RequestRow>> {
+    let since = util::now_ms() - minutes.max(1) * MINUTE_MS;
     state
         .nexo
         .db()
-        .recent_requests(limit.clamp(1, 500))
+        .recent_requests(since, limit.clamp(1, 500))
         .map_err(map_err)
 }
 
