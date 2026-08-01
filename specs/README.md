@@ -10,6 +10,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0002](0002-proveedores-genericos-y-opencode-zen/spec.md) | Proveedores OpenAI-compatible añadidos por el usuario, y OpenCode Zen | `hecho` | Verificada contra Zen real, 60 modelos. Anthropic-compatible aplazado a petición del usuario |
 | [0003](0003-vista-de-proveedores-legible/spec.md) | Una vista de Proveedores que se lee de un vistazo | `build` | Arregla además que un proveedor propio con API key salía duplicado y en la sección de OpenAI |
 | [0004](0004-modelos-permitidos-por-aplicacion/spec.md) | Elegir qué modelos sirve Nexo a cada aplicación | `build` | La mitad del almacenamiento ya existía sin usarse; el catálogo no aplicaba la misma regla que el gateway |
+| [0005](0005-granularidad-horaria-y-tokens-de-entrada-y-salid/spec.md) | Periodos por horas y tokens de entrada/salida en el panel | `tasks` | «Últimas peticiones» no tenía filtro de tiempo propio; se descubrió al investigar una duda sobre los tokens mostrados |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
