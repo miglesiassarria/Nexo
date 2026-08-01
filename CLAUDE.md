@@ -56,6 +56,29 @@ criterio de aceptación no se cumple, dilo en lugar de maquillarlo.
 Para probar contra la realidad sin tocar los datos del usuario:
 `NEXO_DATA_DIR=/ruta/temporal` y un puerto distinto del 8787.
 
+## Flujo de trabajo con git y PR
+
+Autorización permanente, dada el 2026-08-01: nunca se trabaja directamente sobre
+`main`. Cada arreglo o especificación vive en su propia rama, se abre un PR y se
+fusiona solo si el CI pasa. Esto ocurre siempre, sin que el usuario tenga que
+pedirlo cada vez.
+
+1. Rama nueva antes de tocar código: `fix/<slug>` para un arreglo de fallo,
+   `spec/NNNN-<slug>` para una especificación (mismo número que su carpeta en
+   `specs/`), `chore/<slug>` para el resto (CI, documentación, mantenimiento).
+2. Al terminar la implementación y pasar la verificación local de este documento,
+   se abre el PR contra `main` sin esperar instrucción.
+3. El PR no se fusiona hasta que el workflow `.github/workflows/ci.yml` esté en
+   verde. Si falla, se lee el error real y se corrige en la misma rama — nunca
+   `--no-verify`, nunca forzar el merge, nunca reducir la verificación para que
+   pase.
+4. En verde, se fusiona (squash) y la rama origen se borra sola: el repositorio
+   tiene `delete_branch_on_merge` activado para eso.
+
+Esta autorización cubre crear ramas, abrir PRs y fusionarlos por este camino. No
+cubre `push --force`, saltarse el CI, ni cambiar más configuración del
+repositorio de la descrita aquí: eso sigue pidiéndose en el chat.
+
 ## Invariantes del producto
 
 No se negocian dentro de una especificación. Cambiarlas exige un ADR nuevo que lo
