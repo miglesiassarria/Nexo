@@ -64,6 +64,31 @@ export interface Limit {
   max_output_tokens: number | null;
 }
 
+/** Un modelo de una vía, con si esta aplicación lo tiene marcado. */
+export interface RouteModel {
+  public_name: string;
+  selected: boolean;
+  /** Marcado pero ausente del catálogo de hoy. Se conserva, no se borra. */
+  missing: boolean;
+  accounting: string;
+  priced: boolean;
+  caps: Capabilities;
+}
+
+/** Los modelos de una vía para una aplicación concreta. */
+export interface RouteModels {
+  provider_id: string;
+  credential_kind: string;
+  requires_limit: boolean;
+  /**
+   * Permiso heredado con `*`: vale para todos los modelos de la vía, también los
+   * que el proveedor añada en el futuro. No equivale a marcarlos todos.
+   */
+  inherited_all: boolean;
+  selected: number;
+  models: RouteModel[];
+}
+
 export interface GrantableRoute {
   provider_id: string;
   credential_kind: string;
@@ -272,16 +297,18 @@ export const api = {
   deleteApp: (appId: string) => invoke<void>("delete_app", { appId }),
   appDetail: (appId: string) => invoke<AppDetail>("app_detail", { appId }),
   grantableRoutes: () => invoke<GrantableRoute[]>("grantable_routes"),
-  setAppAccess: (args: {
+  appRouteModels: (args: { appId: string; providerId: string; credentialKind: string }) =>
+    invoke<RouteModels>("app_route_models", args),
+  setAppModels: (args: {
     appId: string;
     providerId: string;
     credentialKind: string;
-    enabled: boolean;
+    models: string[];
     allowTools: boolean;
     allowMultimodal: boolean;
     maxRequests?: number | null;
     windowSeconds?: number | null;
-  }) => invoke<void>("set_app_access", args),
+  }) => invoke<void>("set_app_models", args),
 
   catalog: () => invoke<CatalogRow[]>("catalog"),
   refreshCatalog: () => invoke<CatalogRefresh[]>("refresh_catalog"),

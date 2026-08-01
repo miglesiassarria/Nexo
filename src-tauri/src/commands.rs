@@ -9,7 +9,7 @@ use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
 use nexo_core::provider::CredentialKind;
 use nexo_core::service::{
-    CatalogRefresh, ConnectOption, GatewayStatus, GrantableRoute, ProviderRow,
+    CatalogRefresh, ConnectOption, GatewayStatus, GrantableRoute, ProviderRow, RouteModels,
 };
 use nexo_core::util;
 use serde::Serialize;
@@ -204,18 +204,17 @@ pub fn list_apps(state: State<'_, AppState>) -> CmdResult<Vec<App>> {
 
 /// Crea la aplicación y devuelve el token. Es la única vez que se muestra.
 ///
-/// Nace ya con acceso a las vías que tengan cuenta conectada: si naciera sin
-/// permisos, el cliente vería un catálogo vacío sin saber por qué.
+/// Nace **sin acceso a nada**: los modelos que puede usar se marcan después, en sus
+/// permisos. Antes se le concedían automáticamente todas las vías conectadas, lo que
+/// contradecía el principio de conceder en lugar de denegar y, con permisos por
+/// modelo, regalaría los sesenta modelos de un proveedor a cualquier herramienta.
 #[tauri::command]
 pub fn create_app(
     state: State<'_, AppState>,
     name: String,
     notes: Option<String>,
 ) -> CmdResult<IssuedApp> {
-    state
-        .nexo
-        .create_app_with_access(&name, notes.as_deref())
-        .map_err(map_err)
+    state.nexo.create_app(&name, notes.as_deref()).map_err(map_err)
 }
 
 #[tauri::command]
@@ -249,18 +248,32 @@ pub fn app_detail(state: State<'_, AppState>, app_id: String) -> CmdResult<AppDe
     })
 }
 
-/// Concede o revoca el acceso de una aplicación a una vía concreta.
-///
-/// En la vía de suscripción el límite se crea siempre: no existe forma de
-/// conceder el acceso sin él.
+/// Los modelos de una vía con si esta aplicación los tiene marcados.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn set_app_access(
+pub fn app_route_models(
     state: State<'_, AppState>,
     app_id: String,
     provider_id: String,
     credential_kind: String,
-    enabled: bool,
+) -> CmdResult<RouteModels> {
+    let kind = CredentialKind::parse(&credential_kind)
+        .ok_or_else(|| format!("vía de credencial desconocida: {credential_kind}"))?;
+    state
+        .nexo
+        .app_route_models(&app_id, &provider_id, kind)
+        .map_err(map_err)
+}
+
+/// Reemplaza qué modelos de una vía puede usar la aplicación. Un conjunto vacío
+/// retira la vía: no existe «concedida sin modelos».
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn set_app_models(
+    state: State<'_, AppState>,
+    app_id: String,
+    provider_id: String,
+    credential_kind: String,
+    models: Vec<String>,
     allow_tools: bool,
     allow_multimodal: bool,
     max_requests: Option<i64>,
@@ -268,24 +281,20 @@ pub fn set_app_access(
 ) -> CmdResult<()> {
     let kind = CredentialKind::parse(&credential_kind)
         .ok_or_else(|| format!("vía de credencial desconocida: {credential_kind}"))?;
-    let db = state.nexo.db();
-
-    if !enabled {
-        return db
-            .remove_grant(&app_id, &provider_id, &credential_kind, "*")
-            .map_err(map_err);
-    }
-
-    db.grant_with_mandatory_limit(
-        &app_id,
-        &provider_id,
-        kind,
-        allow_tools,
-        allow_multimodal,
-        max_requests,
-        window_seconds,
-    )
-    .map_err(map_err)
+    state
+        .nexo
+        .db()
+        .replace_app_models(
+            &app_id,
+            &provider_id,
+            kind,
+            &models,
+            allow_tools,
+            allow_multimodal,
+            max_requests,
+            window_seconds,
+        )
+        .map_err(map_err)
 }
 
 // -- Catálogo y estadísticas -----------------------------------------------

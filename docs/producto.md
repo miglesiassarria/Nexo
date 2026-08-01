@@ -164,6 +164,21 @@ El usuario decide qué aplicaciones pueden usar Nexo, con qué proveedores, vía
 modelos, si pueden enviar contenido multimodal, si pueden usar herramientas, qué
 límites se aplican y si sus peticiones se registran.
 
+**El permiso se concede modelo a modelo, no por vía.** Conceder un proveedor entero
+significaba servir sus sesenta modelos a cualquier herramienta con token, y eso importa
+por tres motivos distintos: coste, porque cualquier modelo caro queda alcanzable; ruido,
+porque un selector de sesenta modelos en una herramienta que usa uno es peor
+experiencia; y contención, porque la única respuesta ante una aplicación que se porta
+mal era revocarle el proveedor completo. Lo que la aplicación ve en su selector es
+exactamente lo que puede pedir: el catálogo y el control de la petición aplican la misma
+regla, así que no hay modelos anunciados que luego se rechacen.
+
+Una aplicación nueva **nace sin acceso a nada**. Antes se le concedían automáticamente
+todas las vías conectadas, lo que contradecía el principio que el propio código
+declara: el acceso se concede, no se deniega. Cuesta un paso más al crear una
+herramienta, y evita que la siguiente que instales pueda gastar en el modelo más caro
+del catálogo sin que nadie lo haya decidido.
+
 **Los límites por aplicación son obligatorios en las rutas de suscripción.** No es
 una preferencia que se pueda dejar en blanco: sin ellos Nexo convierte una cuenta
 personal en un pool de API para cualquier proceso con un token válido, que es el

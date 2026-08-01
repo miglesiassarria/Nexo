@@ -111,17 +111,13 @@ impl PolicyEngine {
             .map_err(|e| AdapterError::Transport { detail: e.to_string() })?;
 
         // Sin fila no hay permiso: el acceso se concede, no se deniega.
-        let grant = grants
-            .into_iter()
-            .find(|g| {
-                g.provider_id == provider_id
-                    && g.credential_kind == kind.as_str()
-                    && model_matches(&g.model_pattern, public_model)
-            })
+        let grant = grant_for(&grants, provider_id, kind.as_str(), public_model)
+            .cloned()
             .ok_or_else(|| AdapterError::Auth {
                 reason: format!(
                     "esta aplicación no tiene permiso para usar {public_model} \
-                     por la vía {}. Concédelo desde Nexo.",
+                     por la vía {}. Marca ese modelo en los permisos de la \
+                     aplicación, desde Nexo.",
                     kind.as_str()
                 ),
                 reauth_required: false,
@@ -232,6 +228,28 @@ fn model_matches(pattern: &str, model: &str) -> bool {
     }
 }
 
+/// El permiso que autoriza a esta aplicación a usar este modelo por esta vía, si lo
+/// hay. **Este es el único sitio donde se decide.**
+///
+/// Existe porque la regla estaba escrita dos veces y una se quedó atrás: `check()`
+/// comparaba el patrón del modelo, pero el catálogo que responde `GET /v1/models`
+/// filtraba solo por proveedor y credencial. Con un permiso estrecho, el catálogo
+/// anunciaba modelos que el gateway después rechazaba, que es la peor forma de
+/// fallar: el cliente descubre que no puede cuando ya está enviando la petición.
+/// Cualquier camino que decida sobre modelos permitidos pasa por aquí.
+pub fn grant_for<'a>(
+    grants: &'a [Grant],
+    provider_id: &str,
+    credential_kind: &str,
+    public_model: &str,
+) -> Option<&'a Grant> {
+    grants.iter().find(|g| {
+        g.provider_id == provider_id
+            && g.credential_kind == credential_kind
+            && model_matches(&g.model_pattern, public_model)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +316,61 @@ mod tests {
         assert!(!model_matches("google/*", "openai/gpt-5.5"));
         assert!(model_matches("openai/gpt-5.5", "openai/gpt-5.5"));
         assert!(!model_matches("openai/gpt-5.4", "openai/gpt-5.5"));
+    }
+
+    /// Un nombre marcado es un nombre exacto, y los nombres reales llevan barras y a
+    /// veces guiones y puntos. Nada de eso puede comportarse como un comodín.
+    #[test]
+    fn an_exact_name_never_matches_a_different_model() {
+        // El caso que importa: marcar un modelo no puede dar acceso a los que
+        // empiezan igual. «…-free» y «…-free-max» son dos modelos distintos.
+        assert!(!model_matches(
+            "opencode-zen/deepseek-v4-flash-free",
+            "opencode-zen/deepseek-v4-flash-free-max"
+        ));
+        assert!(!model_matches("opencode-zen/x", "opencode-zen/x/y"));
+        assert!(model_matches(
+            "opencode-zen/claude-haiku-4.5",
+            "opencode-zen/claude-haiku-4.5"
+        ));
+        // Un `*` que no está al final no es un comodín: es parte del nombre.
+        assert!(!model_matches("a*b", "azzzb"));
+        assert!(model_matches("a*b", "a*b"));
+    }
+
+    #[test]
+    fn grant_for_is_the_single_place_that_decides() {
+        let grants = vec![
+            Grant {
+                provider_id: "opencode-zen".into(),
+                credential_kind: "api_key".into(),
+                model_pattern: "opencode-zen/uno".into(),
+                allow_tools: true,
+                allow_multimodal: false,
+                log_content: false,
+            },
+            Grant {
+                provider_id: "openai".into(),
+                credential_kind: "api_key".into(),
+                model_pattern: "*".into(),
+                allow_tools: false,
+                allow_multimodal: false,
+                log_content: false,
+            },
+        ];
+
+        // Marcado: sí, y devuelve su fila (de ahí salen las capacidades).
+        let hit = grant_for(&grants, "opencode-zen", "api_key", "opencode-zen/uno");
+        assert!(hit.is_some_and(|g| g.allow_tools));
+
+        // Mismo proveedor, modelo no marcado: no.
+        assert!(grant_for(&grants, "opencode-zen", "api_key", "opencode-zen/dos").is_none());
+
+        // El permiso heredado con `*` sigue valiendo para cualquier modelo suyo.
+        assert!(grant_for(&grants, "openai", "api_key", "openai/lo-que-sea").is_some());
+
+        // Y el eje de credencial se respeta: la misma pareja por otra vía es otra cosa.
+        assert!(grant_for(&grants, "openai", "subscription_oauth", "openai/x").is_none());
     }
 
     #[test]

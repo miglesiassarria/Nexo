@@ -69,6 +69,39 @@ CREATE TABLE app_grants (
 
 Sin fila no hay permiso. El acceso se concede, no se deniega.
 
+**Una fila es un modelo concedido, no una vía concedida.** Marcar tres modelos de un
+proveedor son tres filas, y por eso `model_pattern` está en la clave primaria. Un
+conjunto vacío de modelos no es un estado: son cero filas, y eso es exactamente lo
+mismo que no haber concedido nada. Por consiguiente, marcar el primer modelo concede
+la vía y desmarcar el último la retira.
+
+`model_pattern` admite tres formas, y solo la primera la escribe hoy la interfaz:
+
+| Valor | Significado |
+| --- | --- |
+| `openai/gpt-5.5` | Ese modelo exacto. Es lo que escribe la interfaz al marcar |
+| `*` | Todos los modelos de esa vía, **incluidos los que el proveedor añada después**. Es lo que había antes de que se pudieran elegir modelos, y se conserva para no cambiar el comportamiento de las aplicaciones existentes |
+| `openai/*` | Prefijo. El almacenamiento lo respeta, pero la interfaz no ofrece escribirlos |
+
+`*` y «marcar los sesenta modelos uno a uno» **no son equivalentes**: ante un modelo
+nuevo del proveedor, el primero lo sirve y el segundo no.
+
+Quién decide si una aplicación puede usar un modelo es una única función,
+`policy::grant_for`. Estuvo escrita dos veces —una en el control de la petición y otra
+en el catálogo que responde `GET /v1/models`— y la del catálogo se quedó sin comparar
+el patrón: con un permiso estrecho anunciaba modelos que el gateway después rechazaba.
+Cualquier camino que decida sobre modelos permitidos pasa por esa función.
+
+Las filas de una misma vía llevan `allow_tools`, `allow_multimodal` y `log_content`
+repetidos e iguales: esas capacidades son de la vía, no del modelo. Es una
+desnormalización conocida; llevarlas a su propia tabla exige una migración y no
+resolvía nada de lo pedido.
+
+Un modelo marcado que desaparece del catálogo **conserva su fila**. Son intención
+declarada del usuario, y un proveedor que falle un minuto o devuelva un catálogo
+incompleto no debe borrar permisos para siempre. La interfaz las muestra señaladas, y
+la consulta de catálogo vacía las distingue con el motivo `no_models_match`.
+
 ## Límites
 
 ```sql

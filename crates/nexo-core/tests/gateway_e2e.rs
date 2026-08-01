@@ -285,6 +285,175 @@ async fn usage_that_arrives_after_finished_is_recorded_once_and_with_its_tokens(
     assert_eq!(raw.matches("data: [DONE]").count(), 1, "un solo centinela final");
 }
 
+// -- Modelos permitidos por aplicación (spec 0004) -------------------------
+
+/// Prepara una aplicación con dos modelos del mock en catálogo y ninguno marcado.
+/// Devuelve el arnés y los nombres públicos de los dos modelos.
+async fn start_with_two_mock_models() -> (Harness, String, String) {
+    let h = start().await;
+    h.nexo
+        .db()
+        .replace_models(
+            "mock",
+            CredentialKind::Mock,
+            &[
+                nexo_core::provider::mock::MockAdapter::descriptor(),
+                nexo_core::provider::mock::MockAdapter::trailing_event_descriptor(),
+            ],
+            nexo_core::catalog::MANIFEST_VERSION,
+        )
+        .expect("catálogo de prueba");
+    (
+        h,
+        "mock/mock-echo".to_string(),
+        "mock/mock-trailing-event".to_string(),
+    )
+}
+
+fn app_id(h: &Harness) -> String {
+    h.nexo.db().apps().unwrap()[0].id.clone()
+}
+
+async fn models_listed(h: &Harness) -> Vec<String> {
+    let body: Value = h
+        .http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Criterio 1: el catálogo devuelve solo lo marcado, no todo lo de la vía.
+#[tokio::test]
+async fn the_catalog_only_lists_the_models_the_app_has_marked() {
+    let (h, uno, dos) = start_with_two_mock_models().await;
+
+    // El permiso de partida es `*`: los dos modelos se listan.
+    let todos = models_listed(&h).await;
+    assert!(todos.contains(&uno) && todos.contains(&dos));
+
+    // Se marca solo uno.
+    h.nexo
+        .db()
+        .replace_app_models(
+            &app_id(&h),
+            "mock",
+            CredentialKind::Mock,
+            std::slice::from_ref(&uno),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(models_listed(&h).await, vec![uno]);
+}
+
+/// Criterio 2: un modelo no marcado se rechaza nombrándolo, y no se sirve otro en su
+/// lugar. Es la invariante de no degradar en silencio.
+#[tokio::test]
+async fn a_model_that_is_not_marked_is_refused_by_name_and_nothing_else_is_served() {
+    let (h, uno, dos) = start_with_two_mock_models().await;
+    h.nexo
+        .db()
+        .replace_app_models(
+            &app_id(&h),
+            "mock",
+            CredentialKind::Mock,
+            &[uno],
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let resp = h
+        .post_chat(json!({
+            "model": dos,
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+
+    assert!(!resp.status().is_success(), "no puede atenderse");
+    let body: Value = resp.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains(&dos),
+        "el error debe nombrar el modelo rechazado: {message}"
+    );
+    assert!(
+        body["choices"].is_null(),
+        "no se sirve otro modelo en su lugar"
+    );
+}
+
+/// Criterio 3: y el modelo que sí está marcado sigue funcionando igual.
+#[tokio::test]
+async fn a_marked_model_still_works() {
+    let (h, uno, _dos) = start_with_two_mock_models().await;
+    h.nexo
+        .db()
+        .replace_app_models(
+            &app_id(&h),
+            "mock",
+            CredentialKind::Mock,
+            std::slice::from_ref(&uno),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let resp = h
+        .post_chat(json!({
+            "model": uno,
+            "messages": [{"role": "user", "content": "hola mundo"}]
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], uno);
+    assert!(!body["choices"][0]["message"]["content"].is_null());
+}
+
+/// Criterio 6: un permiso heredado con `*` sigue sirviendo todos los modelos de su
+/// vía. Es lo que impide que esta versión rompa las aplicaciones que ya funcionan.
+#[tokio::test]
+async fn an_inherited_wildcard_grant_keeps_serving_every_model_over_http() {
+    let (h, uno, dos) = start_with_two_mock_models().await;
+
+    // El arnés concede con `*`, igual que las aplicaciones ya existentes.
+    let grants = h.nexo.db().grants(&app_id(&h)).unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].model_pattern, "*");
+
+    let listed = models_listed(&h).await;
+    assert!(listed.contains(&uno) && listed.contains(&dos));
+
+    for model in [uno, dos] {
+        let resp = h
+            .post_chat(json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "hola"}]
+            }))
+            .await;
+        assert!(resp.status().is_success(), "«{model}» debía seguir sirviéndose");
+    }
+}
+
 /// El tiempo hasta el primer token se mide desde que arrancó la petición, no
 /// desde el evento `Started`. En `chat/completions` ese evento y el primer
 /// trozo de texto salen del mismo fragmento SSE, así que medir entre ellos

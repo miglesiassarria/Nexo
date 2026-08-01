@@ -588,25 +588,16 @@ impl Nexo {
     /// muestran «no se encontraron modelos» tanto ante un 401 como ante una
     /// lista vacía. El acceso se sigue pudiendo quitar con un clic, pero el
     /// camino por defecto tiene que llevar a algo que funcione.
-    pub fn create_app_with_access(&self, name: &str, notes: Option<&str>) -> Result<IssuedApp> {
-        let issued = self.db.create_app(name, notes)?;
-
-        for account in self.db.accounts()? {
-            if account.status == "revoked" {
-                continue;
-            }
-            self.db.grant_with_mandatory_limit(
-                &issued.app.id,
-                &account.provider_id,
-                account.credential_kind,
-                true,
-                true,
-                None,
-                None,
-            )?;
-        }
-
-        Ok(issued)
+    /// Emite una aplicación **sin conceder nada**.
+    ///
+    /// Antes concedía automáticamente todas las vías conectadas, lo que contradecía
+    /// el principio que este mismo código declara en `policy.rs`: «el acceso se
+    /// concede, no se deniega». Y con permisos por modelo ese automatismo sería peor
+    /// todavía: daría los sesenta modelos de un proveedor a cualquier herramienta
+    /// nueva. Los modelos se marcan después, en los permisos de la aplicación
+    /// (spec 0004).
+    pub fn create_app(&self, name: &str, notes: Option<&str>) -> Result<IssuedApp> {
+        self.db.create_app(name, notes)
     }
 
     /// Desconecta una cuenta y elimina sus secretos del equipo.
@@ -761,21 +752,50 @@ impl Nexo {
 
         let reason = if !models.is_empty() {
             None
-        } else if self.db.grants(app_id)?.is_empty() {
-            Some("no_grants")
-        } else if self
-            .db
-            .accounts()?
-            .iter()
-            .all(|a| a.status == "revoked")
-        {
-            Some("no_account")
         } else {
-            Some("empty_catalog")
+            Some(self.empty_catalog_reason(app_id)?)
         };
 
         self.record_catalog_query(app_id, models.len(), reason, started);
         Ok(models)
+    }
+
+    /// Por qué el catálogo de una aplicación salió vacío.
+    ///
+    /// Cuatro motivos distinguibles, porque los cuatro se arreglan de forma distinta y
+    /// desde el cliente los cuatro se ven igual: «no se encontraron modelos». No hay un
+    /// motivo para «vía concedida sin modelos marcados» porque ese estado no existe:
+    /// marcar el primer modelo concede la vía y desmarcar el último la retira, así que
+    /// son cero filas, indistinguibles de no haber concedido nada.
+    fn empty_catalog_reason(&self, app_id: &str) -> Result<&'static str> {
+        let grants = self.db.grants(app_id)?;
+        if grants.is_empty() {
+            return Ok("no_grants");
+        }
+        if self.db.accounts()?.iter().all(|a| a.status == "revoked") {
+            return Ok("no_account");
+        }
+
+        let catalog = self.db.catalog_rows()?;
+        if catalog.is_empty() {
+            return Ok("empty_catalog");
+        }
+        // Hay permisos y hay catálogo, pero ninguno de los modelos marcados existe hoy:
+        // el proveedor cambió sus identificadores o dejó de ofrecerlos. Las filas se
+        // conservan a propósito (son intención del usuario), así que hay que poder
+        // diagnosticar este caso desde el panel.
+        let marked_but_gone = grants.iter().any(|g| {
+            g.model_pattern != "*"
+                && !catalog.iter().any(|r| {
+                    r.provider_id == g.provider_id
+                        && r.credential_kind == g.credential_kind
+                        && r.public_name == g.model_pattern
+                })
+        });
+        if marked_but_gone {
+            return Ok("no_models_match");
+        }
+        Ok("empty_catalog")
     }
 
     /// Anota una consulta de catálogo como evento de operación `models`.
@@ -832,10 +852,16 @@ impl Nexo {
 
         let mut out = Vec::new();
         for row in rows {
-            let permitted = grants.iter().any(|g| {
-                g.provider_id == row.provider_id && g.credential_kind == row.credential_kind
-            });
-            if !permitted {
+            // La misma función que usa el gateway, no una condición parecida: cuando
+            // eran dos, el catálogo anunciaba modelos que después se rechazaban.
+            if crate::policy::grant_for(
+                &grants,
+                &row.provider_id,
+                &row.credential_kind,
+                &row.public_name,
+            )
+            .is_none()
+            {
                 continue;
             }
             let kind = CredentialKind::parse(&row.credential_kind)
@@ -1065,6 +1091,72 @@ impl Nexo {
         });
 
         Ok(out)
+    }
+
+    /// Los modelos de una vía con si esta aplicación los tiene marcados.
+    ///
+    /// Incluye al final los marcados que **ya no están en el catálogo**: se conservan
+    /// a propósito —son intención declarada del usuario, y un proveedor que falle un
+    /// minuto no debe borrar permisos para siempre—, así que hay que poder verlos y
+    /// desmarcarlos.
+    pub fn app_route_models(
+        &self,
+        app_id: &str,
+        provider_id: &str,
+        kind: CredentialKind,
+    ) -> Result<RouteModels> {
+        let grants = self.db.grants(app_id)?;
+        let route_grants: Vec<_> = grants
+            .iter()
+            .filter(|g| g.provider_id == provider_id && g.credential_kind == kind.as_str())
+            .collect();
+
+        // Un permiso heredado con `*` vale para todos los modelos de la vía, incluidos
+        // los que el proveedor añada mañana. No es lo mismo que tenerlos marcados uno a
+        // uno, y la interfaz tiene que poder decirlo.
+        let all = route_grants.iter().any(|g| g.model_pattern == "*");
+
+        let mut models: Vec<RouteModel> = self
+            .db
+            .catalog_rows()?
+            .into_iter()
+            .filter(|r| r.provider_id == provider_id && r.credential_kind == kind.as_str())
+            .map(|r| RouteModel {
+                selected: all || route_grants.iter().any(|g| g.model_pattern == r.public_name),
+                missing: false,
+                public_name: r.public_name,
+                accounting: r.accounting,
+                priced: r.price_input.is_some(),
+                caps: r.caps,
+            })
+            .collect();
+        models.sort_by(|a, b| a.public_name.cmp(&b.public_name));
+
+        let known: Vec<&str> = models.iter().map(|m| m.public_name.as_str()).collect();
+        let mut orphans: Vec<RouteModel> = route_grants
+            .iter()
+            .filter(|g| g.model_pattern != "*" && !known.contains(&g.model_pattern.as_str()))
+            .map(|g| RouteModel {
+                public_name: g.model_pattern.clone(),
+                selected: true,
+                missing: true,
+                accounting: "unavailable".into(),
+                priced: false,
+                caps: Default::default(),
+            })
+            .collect();
+        orphans.sort_by(|a, b| a.public_name.cmp(&b.public_name));
+        models.extend(orphans);
+
+        let selected = models.iter().filter(|m| m.selected).count();
+        Ok(RouteModels {
+            provider_id: provider_id.to_string(),
+            credential_kind: kind.as_str().to_string(),
+            requires_limit: kind.requires_app_limit(),
+            inherited_all: all,
+            selected,
+            models,
+        })
     }
 
     // -- Ciclo de una petición --------------------------------------------
@@ -1595,6 +1687,32 @@ fn needs_attention(status: &str) -> bool {
     !matches!(status, "active")
 }
 
+/// Un modelo de una vía, con si la aplicación lo tiene marcado.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteModel {
+    pub public_name: String,
+    pub selected: bool,
+    /// Marcado pero ausente del catálogo de hoy. Se conserva, no se borra.
+    pub missing: bool,
+    pub accounting: String,
+    pub priced: bool,
+    pub caps: crate::provider::Capabilities,
+}
+
+/// Los modelos de una vía para una aplicación concreta.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteModels {
+    pub provider_id: String,
+    pub credential_kind: String,
+    /// Si conceder esta vía obliga a fijar un límite (ADR 0001).
+    pub requires_limit: bool,
+    /// Permiso heredado con `*`: vale para todos los modelos de la vía, también los
+    /// que el proveedor añada en el futuro. No equivale a marcarlos todos.
+    pub inherited_all: bool,
+    pub selected: usize,
+    pub models: Vec<RouteModel>,
+}
+
 /// Cómo se gestiona una fila: de qué comandos dispone.
 ///
 /// Lo declara el núcleo porque no es cosmético: desconectar un proveedor añadido por
@@ -1679,6 +1797,7 @@ pub struct GatewayStatus {
 mod tests {
     use super::*;
     use crate::secrets::MemorySecretStore;
+    use crate::provider::ModelDescriptor;
 
     fn nexo() -> Arc<Nexo> {
         Nexo::new(
@@ -2199,6 +2318,230 @@ mod tests {
         let n = nexo();
         // "mock" es integrado: no debe ni mirar `custom_providers`.
         assert!(n.adapter_for("mock", CredentialKind::Mock).is_some());
+    }
+
+    // -- Modelos permitidos por aplicación (spec 0004) ----------------------
+
+    /// El criterio 4 de la spec 0004, y la razón de que `grant_for` exista: nada
+    /// listado puede ser rechazable, y nada rechazable puede estar listado. Antes de
+    /// unificar la decisión, el catálogo filtraba solo por vía y el gateway también
+    /// por modelo, así que un permiso estrecho listaba 60 modelos y rechazaba 58.
+    #[tokio::test]
+    async fn catalog_and_gateway_never_disagree_about_what_is_allowed() {
+        let n = nexo();
+        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z").await.unwrap();
+        // Catálogo de tres modelos por esa vía.
+        n.db()
+            .replace_models(
+                "zen",
+                CredentialKind::ApiKey,
+                &["uno", "dos", "tres"].map(|id| ModelDescriptor {
+                    api_id: id.into(),
+                    public_name: format!("zen/{id}"),
+                    caps: crate::provider::Capabilities {
+                        text: true,
+                        streaming: true,
+                        ..Default::default()
+                    },
+                    limits: Default::default(),
+                    accounting: Accounting::Metered,
+                    pricing: None,
+                }),
+                catalog::MANIFEST_VERSION,
+            )
+            .unwrap();
+
+        let app = n.db().create_app("cliente", None).unwrap().app;
+        // Solo uno marcado, de los tres que existen.
+        n.db()
+            .set_grant(
+                &app.id,
+                &crate::apps::Grant {
+                    provider_id: "zen".into(),
+                    credential_kind: "api_key".into(),
+                    model_pattern: "zen/dos".into(),
+                    allow_tools: true,
+                    allow_multimodal: true,
+                    log_content: false,
+                },
+            )
+            .unwrap();
+
+        let listed: Vec<String> = n
+            .models_for_app(&app.id)
+            .unwrap()
+            .into_iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(listed, vec!["zen/dos"], "el catálogo solo anuncia lo marcado");
+
+        // Y la otra mitad del criterio: cada modelo del catálogo completo se comprueba
+        // contra la decisión del gateway, y las dos respuestas coinciden.
+        let grants = n.db().grants(&app.id).unwrap();
+        for row in n.db().catalog_rows().unwrap() {
+            let gateway_allows = crate::policy::grant_for(
+                &grants,
+                &row.provider_id,
+                &row.credential_kind,
+                &row.public_name,
+            )
+            .is_some();
+            let catalog_lists = listed.contains(&row.public_name);
+            assert_eq!(
+                catalog_lists, gateway_allows,
+                "«{}» se lista {} pero el gateway {}",
+                row.public_name,
+                if catalog_lists { "sí" } else { "no" },
+                if gateway_allows { "lo permite" } else { "lo rechaza" }
+            );
+        }
+    }
+
+    /// Prepara una vía «zen» con tres modelos en catálogo y una cuenta conectada.
+    async fn nexo_with_zen_catalog() -> Arc<Nexo> {
+        let n = nexo();
+        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z").await.unwrap();
+        n.db()
+            .replace_models(
+                "zen",
+                CredentialKind::ApiKey,
+                &["uno", "dos", "tres"].map(|id| ModelDescriptor {
+                    api_id: id.into(),
+                    public_name: format!("zen/{id}"),
+                    caps: crate::provider::Capabilities {
+                        text: true,
+                        streaming: true,
+                        ..Default::default()
+                    },
+                    limits: Default::default(),
+                    accounting: Accounting::Metered,
+                    pricing: None,
+                }),
+                catalog::MANIFEST_VERSION,
+            )
+            .unwrap();
+        n
+    }
+
+    #[test]
+    fn a_new_app_is_born_with_no_access() {
+        let n = nexo();
+        let app = n.create_app("cliente", None).unwrap().app;
+        assert!(
+            n.db().grants(&app.id).unwrap().is_empty(),
+            "el acceso se concede, no se hereda por existir"
+        );
+        assert!(n.models_for_app(&app.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_catalog_reason_tells_the_four_cases_apart() {
+        let n = nexo_with_zen_catalog().await;
+        let app = n.db().create_app("cliente", None).unwrap().app;
+
+        // 1. Nada concedido.
+        assert_eq!(n.empty_catalog_reason(&app.id).unwrap(), "no_grants");
+
+        // 2. Modelos marcados que ya no existen en el catálogo.
+        n.db()
+            .replace_app_models(
+                &app.id,
+                "zen",
+                CredentialKind::ApiKey,
+                &[String::from("zen/modelo-que-se-fue")],
+                true,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(n.empty_catalog_reason(&app.id).unwrap(), "no_models_match");
+
+        // 3. Marcado y presente: ya no está vacío, así que no hay motivo que dar.
+        n.db()
+            .replace_app_models(
+                &app.id,
+                "zen",
+                CredentialKind::ApiKey,
+                &[String::from("zen/dos")],
+                true,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(n.models_for_app(&app.id).unwrap().len(), 1);
+
+        // 4. Sin cuenta activa, aunque el permiso siga ahí.
+        let account = n.db().account_for("zen", CredentialKind::ApiKey).unwrap().unwrap();
+        n.db().set_account_status(&account.id, "revoked").unwrap();
+        assert_eq!(n.empty_catalog_reason(&app.id).unwrap(), "no_account");
+    }
+
+    #[tokio::test]
+    async fn app_route_models_marks_what_is_selected_and_keeps_the_orphans() {
+        let n = nexo_with_zen_catalog().await;
+        let app = n.db().create_app("cliente", None).unwrap().app;
+        n.db()
+            .replace_app_models(
+                &app.id,
+                "zen",
+                CredentialKind::ApiKey,
+                &["zen/dos", "zen/ya-no-existe"].map(String::from),
+                true,
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let route = n.app_route_models(&app.id, "zen", CredentialKind::ApiKey).unwrap();
+        assert!(!route.inherited_all);
+        assert_eq!(route.selected, 2);
+        assert!(!route.requires_limit, "una vía de API key no exige límite");
+
+        let names: Vec<&str> = route.models.iter().map(|m| m.public_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["zen/dos", "zen/tres", "zen/uno", "zen/ya-no-existe"],
+            "los del catálogo por nombre, y los huérfanos al final"
+        );
+
+        let by = |name: &str| route.models.iter().find(|m| m.public_name == name).unwrap();
+        assert!(by("zen/dos").selected && !by("zen/dos").missing);
+        assert!(!by("zen/uno").selected);
+        assert!(
+            by("zen/ya-no-existe").selected && by("zen/ya-no-existe").missing,
+            "un marcado que desapareció se conserva y se señala"
+        );
+    }
+
+    /// Criterio 6: los permisos que ya existen usan `*` y tienen que seguir dando
+    /// acceso a todos los modelos de su vía, incluidos los que lleguen después.
+    #[tokio::test]
+    async fn an_inherited_wildcard_grant_keeps_giving_every_model() {
+        let n = nexo_with_zen_catalog().await;
+        let app = n.db().create_app("studio", None).unwrap().app;
+        n.db()
+            .set_grant(
+                &app.id,
+                &crate::apps::Grant {
+                    provider_id: "zen".into(),
+                    credential_kind: "api_key".into(),
+                    model_pattern: "*".into(),
+                    allow_tools: true,
+                    allow_multimodal: true,
+                    log_content: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(n.models_for_app(&app.id).unwrap().len(), 3);
+
+        let route = n.app_route_models(&app.id, "zen", CredentialKind::ApiKey).unwrap();
+        assert!(route.inherited_all, "la interfaz tiene que poder decir «todos»");
+        assert_eq!(route.selected, 3);
+        assert!(route.models.iter().all(|m| m.selected && !m.missing));
     }
 
     // -- Filas de la pestaña de Proveedores (spec 0003) ---------------------

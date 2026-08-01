@@ -8,6 +8,7 @@
     type AppDetail,
     type GrantableRoute,
     type IssuedApp,
+    type RouteModels,
   } from "../api";
 
   let { onchange }: { onchange: () => void } = $props();
@@ -24,6 +25,104 @@
   let newName = $state("");
   let error = $state<string | null>(null);
   let expanded = $state<string | null>(null);
+
+  /** Modelos de cada vía de la aplicación desplegada, por `proveedor|vía`. */
+  let routeModels = $state<Record<string, RouteModels>>({});
+  /** Vía cuya lista de modelos está abierta, y el texto del buscador. */
+  let openRoute = $state<string | null>(null);
+  let filter = $state("");
+  let saving = $state(false);
+
+  const routeKey = (provider: string, kind: string) => `${provider}|${kind}`;
+
+  async function loadRouteModels(app: App) {
+    const next: Record<string, RouteModels> = {};
+    for (const route of routes) {
+      next[routeKey(route.provider_id, route.credential_kind)] = await api.appRouteModels({
+        appId: app.id,
+        providerId: route.provider_id,
+        credentialKind: route.credential_kind,
+      });
+    }
+    routeModels = next;
+  }
+
+  async function togglePermissions(app: App) {
+    if (expanded === app.id) {
+      expanded = null;
+      openRoute = null;
+      return;
+    }
+    expanded = app.id;
+    openRoute = null;
+    filter = "";
+    error = null;
+    try {
+      await loadRouteModels(app);
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  function visible(models: RouteModels["models"]) {
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return models;
+    return models.filter((m) => m.public_name.toLowerCase().includes(needle));
+  }
+
+  /**
+   * Guarda el conjunto entero de modelos de una vía. Un conjunto vacío retira la
+   * vía: no existe «concedida sin modelos».
+   */
+  async function saveModels(app: App, route: GrantableRoute, models: string[]) {
+    saving = true;
+    error = null;
+    const grant = grantFor(app.id, route.provider_id, route.credential_kind);
+    const limit = limitFor(app.id, route.provider_id, route.credential_kind);
+    try {
+      await api.setAppModels({
+        appId: app.id,
+        providerId: route.provider_id,
+        credentialKind: route.credential_kind,
+        models,
+        allowTools: grant?.allow_tools ?? true,
+        allowMultimodal: grant?.allow_multimodal ?? true,
+        maxRequests: limit?.max_requests ?? null,
+        windowSeconds: limit?.window_seconds ?? null,
+      });
+      await load();
+      await loadRouteModels(app);
+      onchange();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      saving = false;
+    }
+  }
+
+  function selectedNames(key: string): string[] {
+    return (routeModels[key]?.models ?? []).filter((m) => m.selected).map((m) => m.public_name);
+  }
+
+  function toggleModel(app: App, route: GrantableRoute, name: string, on: boolean) {
+    const key = routeKey(route.provider_id, route.credential_kind);
+    const current = new Set(selectedNames(key));
+    if (on) current.add(name);
+    else current.delete(name);
+    saveModels(app, route, [...current]);
+  }
+
+  /** Marca o desmarca lo que el filtro deja a la vista, no todo el catálogo. */
+  function toggleVisible(app: App, route: GrantableRoute, on: boolean) {
+    const key = routeKey(route.provider_id, route.credential_kind);
+    const shown = visible(routeModels[key]?.models ?? []).map((m) => m.public_name);
+    const current = new Set(selectedNames(key));
+    for (const name of shown) {
+      if (on) current.add(name);
+      else current.delete(name);
+    }
+    saveModels(app, route, [...current]);
+  }
 
   async function load() {
     try {
@@ -84,54 +183,29 @@
     );
   }
 
-  async function toggleRoute(
-    app: App,
-    provider: string,
-    kind: string,
-    enabled: boolean,
-  ) {
-    error = null;
-    const existing = grantFor(app.id, provider, kind);
-    const limit = limitFor(app.id, provider, kind);
-    try {
-      await api.setAppAccess({
-        appId: app.id,
-        providerId: provider,
-        credentialKind: kind,
-        enabled,
-        allowTools: existing?.allow_tools ?? true,
-        allowMultimodal: existing?.allow_multimodal ?? true,
-        maxRequests: limit?.max_requests ?? null,
-        windowSeconds: limit?.window_seconds ?? null,
-      });
-      await load();
-      onchange();
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
   async function updateLimit(
     app: App,
-    provider: string,
-    kind: string,
+    route: GrantableRoute,
     maxRequests: number,
     windowSeconds: number,
   ) {
     error = null;
-    const existing = grantFor(app.id, provider, kind);
+    const key = routeKey(route.provider_id, route.credential_kind);
+    const grant = grantFor(app.id, route.provider_id, route.credential_kind);
     try {
-      await api.setAppAccess({
+      await api.setAppModels({
         appId: app.id,
-        providerId: provider,
-        credentialKind: kind,
-        enabled: true,
-        allowTools: existing?.allow_tools ?? true,
-        allowMultimodal: existing?.allow_multimodal ?? true,
+        providerId: route.provider_id,
+        credentialKind: route.credential_kind,
+        // El límite se cambia sin tocar la selección: se reenvía la que hay.
+        models: routeModels[key]?.inherited_all ? ["*"] : selectedNames(key),
+        allowTools: grant?.allow_tools ?? true,
+        allowMultimodal: grant?.allow_multimodal ?? true,
         maxRequests,
         windowSeconds,
       });
       await load();
+      await loadRouteModels(app);
       onchange();
     } catch (e) {
       error = errorText(e);
@@ -170,7 +244,8 @@
     <h2>Nueva aplicación</h2>
     <p class="muted">
       Cada herramienta recibe su propio token, revocable de forma independiente.
-      Nace con acceso a las vías que ya tengan una cuenta conectada.
+      Nace <strong>sin acceso a ningún modelo</strong>: después, en
+      <strong>Permisos</strong>, marcas los que puede usar.
     </p>
     <div class="new-form">
       <input bind:value={newName} placeholder="Nombre, p. ej. «Cursor» o «script de notas»" />
@@ -207,10 +282,7 @@
           </span>
         </div>
         <div class="row">
-          <button
-            class="ghost"
-            onclick={() => (expanded = expanded === app.id ? null : app.id)}
-          >
+          <button class="ghost" onclick={() => togglePermissions(app)}>
             {expanded === app.id ? "Ocultar permisos" : "Permisos"}
           </button>
           {#if !app.revoked_at}
@@ -223,41 +295,117 @@
 
       {#if !app.revoked_at && (details[app.id]?.grants.length ?? 0) === 0}
         <div class="notice warn">
-          Esta aplicación no tiene ninguna vía concedida, así que
+          Esta aplicación no tiene ningún modelo marcado, así que
           <code>GET /v1/models</code> le devuelve una lista vacía. La mayoría de
-          clientes lo muestran como «no se encontraron modelos». Concédele acceso
-          en <strong>Permisos</strong>.
+          clientes lo muestran como «no se encontraron modelos». Marca los modelos
+          que puede usar en <strong>Permisos</strong>.
         </div>
       {/if}
 
       {#if expanded === app.id}
         <div class="routes">
           {#each routes as route (route.provider_id + route.credential_kind)}
+            {@const key = routeKey(route.provider_id, route.credential_kind)}
             {@const grant = grantFor(app.id, route.provider_id, route.credential_kind)}
             {@const limit = limitFor(app.id, route.provider_id, route.credential_kind)}
+            {@const rm = routeModels[key]}
             <div class="route">
-              <label class="check">
-                <input
-                  type="checkbox"
-                  checked={!!grant}
-                  onchange={(e) =>
-                    toggleRoute(
-                      app,
-                      route.provider_id,
-                      route.credential_kind,
-                      e.currentTarget.checked,
-                    )}
-                />
-                <span>
-                  {route.provider_id} · {kindLabel(route.credential_kind)}
-                </span>
-                <span class="badge">{route.models} modelo(s)</span>
-                {#if !route.connected}
-                  <span class="badge warn" title="Conéctala en Proveedores">
-                    sin cuenta
+              <div class="route-head">
+                <button
+                  class="ghost route-toggle"
+                  onclick={() => {
+                    openRoute = openRoute === key ? null : key;
+                    filter = "";
+                  }}
+                >
+                  <span class="caret">{openRoute === key ? "▾" : "▸"}</span>
+                  <span>{route.provider_id} · {kindLabel(route.credential_kind)}</span>
+                </button>
+                {#if rm?.inherited_all}
+                  <span class="badge sub" title="Incluye los que el proveedor añada después">
+                    todos ({route.models})
+                  </span>
+                {:else}
+                  <span class="badge" class:ok={(rm?.selected ?? 0) > 0}>
+                    {rm?.selected ?? 0} de {route.models}
                   </span>
                 {/if}
-              </label>
+                {#if !route.connected}
+                  <span class="badge warn" title="Conéctala en Proveedores">sin cuenta</span>
+                {/if}
+              </div>
+
+              {#if openRoute === key && rm}
+                <div class="models stack">
+                  {#if rm.inherited_all}
+                    <p class="muted small">
+                      Esta vía viene de un permiso anterior que da acceso a
+                      <strong>todos</strong> sus modelos, incluidos los que el proveedor
+                      añada en el futuro. Si marcas modelos concretos, pasará a servir
+                      solo esos.
+                    </p>
+                  {/if}
+
+                  <div class="filter-row">
+                    <input
+                      bind:value={filter}
+                      placeholder="Buscar entre {route.models} modelos…"
+                    />
+                    <button
+                      onclick={() => toggleVisible(app, route, true)}
+                      disabled={saving}
+                    >
+                      Marcar los visibles
+                    </button>
+                    <button
+                      onclick={() => toggleVisible(app, route, false)}
+                      disabled={saving}
+                    >
+                      Desmarcar
+                    </button>
+                  </div>
+
+                  {#each visible(rm.models) as model (model.public_name)}
+                    <label class="check model">
+                      <input
+                        type="checkbox"
+                        checked={model.selected}
+                        disabled={saving}
+                        onchange={(e) =>
+                          toggleModel(
+                            app,
+                            route,
+                            model.public_name,
+                            e.currentTarget.checked,
+                          )}
+                      />
+                      <code>{model.public_name}</code>
+                      {#if model.missing}
+                        <span
+                          class="badge warn"
+                          title="Marcado, pero el proveedor ya no lo ofrece"
+                        >
+                          ya no está en el catálogo
+                        </span>
+                      {:else}
+                        {#if model.caps.tools}<span class="badge">herramientas</span>{/if}
+                        {#if model.caps.vision}<span class="badge">visión</span>{/if}
+                        {#if model.accounting === "subscription"}
+                          <span class="badge sub">suscripción</span>
+                        {:else if model.accounting === "local"}
+                          <span class="badge">local</span>
+                        {:else if model.priced}
+                          <span class="badge key">por token</span>
+                        {/if}
+                      {/if}
+                    </label>
+                  {/each}
+
+                  {#if visible(rm.models).length === 0}
+                    <p class="muted small">Ningún modelo coincide con «{filter}».</p>
+                  {/if}
+                </div>
+              {/if}
 
               {#if grant && route.requires_limit}
                 <div class="limit">
@@ -269,8 +417,7 @@
                     onchange={(e) =>
                       updateLimit(
                         app,
-                        route.provider_id,
-                        route.credential_kind,
+                        route,
                         Number(e.currentTarget.value),
                         limit?.window_seconds ?? 3600,
                       )}
@@ -281,8 +428,7 @@
                     onchange={(e) =>
                       updateLimit(
                         app,
-                        route.provider_id,
-                        route.credential_kind,
+                        route,
                         limit?.max_requests ?? 60,
                         Number(e.currentTarget.value),
                       )}
@@ -340,6 +486,53 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
+  }
+
+  .route-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .route-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.1rem 0;
+    font-size: 0.875rem;
+    color: var(--text);
+  }
+
+  .caret {
+    color: var(--muted);
+    font-size: 0.75rem;
+    width: 0.8rem;
+  }
+
+  .models {
+    gap: 0.35rem;
+    margin-left: 1.2rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+    /* Sesenta modelos no pueden empujar el resto de la página fuera de vista. */
+    max-height: 22rem;
+    overflow-y: auto;
+  }
+
+  .filter-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.4rem;
+    position: sticky;
+    top: 0;
+    background: var(--surface-2);
+    padding-bottom: 0.4rem;
+  }
+
+  .model code {
+    font-size: 0.78rem;
   }
 
   .check {

@@ -324,6 +324,84 @@ impl Db {
         Ok(())
     }
 
+    /// Reemplaza de golpe qué modelos de una vía puede usar una aplicación.
+    ///
+    /// Una fila por modelo marcado, y el conjunto se sustituye entero en una
+    /// transacción: marcar, desmarcar y «marcar los sesenta visibles» son la misma
+    /// operación con distinto conjunto. Un comando por modelo serían sesenta
+    /// escrituras con estados intermedios visibles si una fallara a mitad.
+    ///
+    /// Un conjunto vacío retira la vía: no existe «concedida sin modelos», porque
+    /// sería un estado que no sirve nada y no se distingue de no estar concedida.
+    ///
+    /// Las capacidades son de la vía, no del modelo, así que se escriben iguales en
+    /// todas sus filas. El límite obligatorio de suscripción se fija aquí por el
+    /// mismo motivo que en `grant_with_mandatory_limit`: no hay forma de conceder lo
+    /// uno sin lo otro (ADR 0001).
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_app_models(
+        &self,
+        app_id: &str,
+        provider_id: &str,
+        kind: CredentialKind,
+        models: &[String],
+        allow_tools: bool,
+        allow_multimodal: bool,
+        max_requests: Option<i64>,
+        window_seconds: Option<i64>,
+    ) -> Result<()> {
+        {
+            let mut conn = self.lock();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "DELETE FROM app_grants
+                 WHERE app_id = ?1 AND provider_id = ?2 AND credential_kind = ?3",
+                params![app_id, provider_id, kind.as_str()],
+            )?;
+            for model in models {
+                let model = model.trim();
+                if model.is_empty() {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO app_grants
+                       (app_id, provider_id, credential_kind, model_pattern,
+                        allow_tools, allow_multimodal, log_content)
+                     VALUES (?1,?2,?3,?4,?5,?6,0)",
+                    params![
+                        app_id,
+                        provider_id,
+                        kind.as_str(),
+                        model,
+                        allow_tools as i64,
+                        allow_multimodal as i64,
+                    ],
+                )?;
+            }
+            tx.commit()?;
+        }
+
+        if models.iter().any(|m| !m.trim().is_empty()) && kind.requires_app_limit() {
+            let window =
+                window_seconds.unwrap_or(crate::config::DEFAULT_SUBSCRIPTION_LIMIT_WINDOW_SECS);
+            let max = max_requests
+                .unwrap_or(crate::config::DEFAULT_SUBSCRIPTION_LIMIT_REQUESTS)
+                .max(1);
+            self.set_limit(
+                app_id,
+                &Limit {
+                    provider_id: provider_id.to_string(),
+                    credential_kind: kind.as_str().to_string(),
+                    window_seconds: window,
+                    max_requests: Some(max),
+                    max_input_tokens: None,
+                    max_output_tokens: None,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Invariante del ADR 0001: ningún grant de suscripción sin límite.
     /// Devuelve los `app_id` que la incumplen.
     pub fn apps_missing_mandatory_limits(&self) -> Result<Vec<String>> {
@@ -427,6 +505,149 @@ mod tests {
     #[test]
     fn app_needs_a_name() {
         assert!(db().create_app("   ", None).is_err());
+    }
+
+    // -- Modelos permitidos por vía (spec 0004) -----------------------------
+
+    fn models(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn replace_app_models_stores_one_row_per_marked_model() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        db.replace_app_models(
+            &app.id,
+            "zen",
+            CredentialKind::ApiKey,
+            &models(&["zen/uno", "zen/dos"]),
+            true,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let mut patterns: Vec<String> =
+            db.grants(&app.id).unwrap().into_iter().map(|g| g.model_pattern).collect();
+        patterns.sort();
+        assert_eq!(patterns, vec!["zen/dos", "zen/uno"]);
+        // Las capacidades son de la vía: iguales en todas sus filas.
+        assert!(db.grants(&app.id).unwrap().iter().all(|g| g.allow_tools && !g.allow_multimodal));
+    }
+
+    #[test]
+    fn replace_app_models_does_not_leave_the_previous_selection_behind() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        let put = |list: &[&str]| {
+            db.replace_app_models(
+                &app.id,
+                "zen",
+                CredentialKind::ApiKey,
+                &models(list),
+                true,
+                true,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        put(&["zen/uno", "zen/dos", "zen/tres"]);
+        put(&["zen/dos"]);
+
+        let patterns: Vec<String> =
+            db.grants(&app.id).unwrap().into_iter().map(|g| g.model_pattern).collect();
+        assert_eq!(patterns, vec!["zen/dos"], "reemplazar sustituye, no acumula");
+    }
+
+    #[test]
+    fn an_empty_selection_withdraws_the_route() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        db.replace_app_models(
+            &app.id,
+            "zen",
+            CredentialKind::ApiKey,
+            &models(&["zen/uno"]),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.grants(&app.id).unwrap().len(), 1);
+
+        db.replace_app_models(&app.id, "zen", CredentialKind::ApiKey, &[], true, true, None, None)
+            .unwrap();
+        assert!(
+            db.grants(&app.id).unwrap().is_empty(),
+            "sin modelos marcados no hay vía concedida: no existe el estado intermedio"
+        );
+    }
+
+    #[test]
+    fn replacing_one_route_leaves_the_others_alone() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        db.replace_app_models(
+            &app.id,
+            "zen",
+            CredentialKind::ApiKey,
+            &models(&["zen/uno"]),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        db.replace_app_models(
+            &app.id,
+            "lmstudio",
+            CredentialKind::Local,
+            &models(&["lmstudio/a", "lmstudio/b"]),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Y borrar una vía entera no toca la otra.
+        db.replace_app_models(&app.id, "zen", CredentialKind::ApiKey, &[], true, true, None, None)
+            .unwrap();
+        let grants = db.grants(&app.id).unwrap();
+        assert_eq!(grants.len(), 2);
+        assert!(grants.iter().all(|g| g.provider_id == "lmstudio"));
+    }
+
+    /// El ADR 0001 no se relaja por poder elegir modelos: marcar uno solo de la vía de
+    /// suscripción sigue creando su límite obligatorio.
+    #[test]
+    fn marking_a_single_subscription_model_still_creates_the_mandatory_limit() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        db.replace_app_models(
+            &app.id,
+            "openai",
+            CredentialKind::SubscriptionOauth,
+            &models(&["openai/gpt-5.5"]),
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let limits = db.limits(&app.id).unwrap();
+        assert_eq!(limits.len(), 1);
+        assert_eq!(
+            limits[0].max_requests,
+            Some(crate::config::DEFAULT_SUBSCRIPTION_LIMIT_REQUESTS)
+        );
+        assert!(db.apps_missing_mandatory_limits().unwrap().is_empty());
     }
 
     #[test]
