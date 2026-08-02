@@ -4,6 +4,13 @@ export type CredentialKind = "api_key" | "subscription_oauth" | "local" | "mock"
 export type Accounting = "metered" | "subscription" | "local";
 export type CostBasis = "reported" | "estimated" | "subscription" | "unavailable";
 
+export interface LanAccessInfo {
+  address: string | null;
+  port: number;
+  cert_fingerprint_sha256: string;
+  cert_path: string;
+}
+
 export interface GatewayStatus {
   paused: boolean;
   bind_error: string | null;
@@ -16,6 +23,7 @@ export interface GatewayStatus {
   apps: number;
   apps_missing_limits: string[];
   manifest_version: string;
+  lan: LanAccessInfo | null;
 }
 
 export interface Account {
@@ -320,8 +328,12 @@ export const api = {
     invoke<RequestRow[]>("recent_requests", { limit, minutes }),
 
   loadSettings: () => invoke<Settings>("load_settings"),
-  saveSettings: (settings: Settings) =>
-    invoke<{ saved: boolean; restart_required: boolean }>("save_settings", { settings }),
+  lanRiskNotice: () => invoke<RiskNotice>("lan_risk_notice"),
+  saveSettings: (settings: Settings, lanRiskAcknowledged: boolean) =>
+    invoke<{ saved: boolean; restart_required: boolean }>("save_settings", {
+      settings,
+      lanRiskAcknowledged,
+    }),
   applyRetention: () =>
     invoke<{ deleted_requests: number; deleted_content: number }>("apply_retention"),
   purgeStats: () => invoke<void>("purge_stats"),

@@ -73,6 +73,35 @@ pub struct RiskNotice {
     pub confirm_label: String,
 }
 
+/// Texto que la interfaz debe mostrar y el usuario aceptar ANTES de activar
+/// el acceso desde la red local. Vive en el núcleo por el mismo motivo que
+/// `risk_notice`: para que no pueda quedar desalineado con lo que el código
+/// hace realmente.
+#[tauri::command]
+pub fn lan_risk_notice() -> RiskNotice {
+    RiskNotice {
+        title: "Vas a permitir que otros equipos de tu red usen este Nexo".into(),
+        points: vec![
+            "Cualquier dispositivo conectado a la misma red (también invitados en un \
+             Wi-Fi doméstico) podrá intentar conectarse. Sigue haciendo falta el mismo \
+             token de aplicación de siempre; sin él, la petición se rechaza igual que hoy."
+                .into(),
+            "Nexo genera un certificado propio para cifrar la conexión. No está firmado \
+             por ninguna autoridad reconocida: cada dispositivo nuevo mostrará un aviso \
+             de «certificado no confiable» la primera vez, que hay que aceptar a mano."
+                .into(),
+            "Si en este momento estás conectado a una VPN o a una red que no es la tuya, \
+             quedarás expuesto también ahí: el modo escucha en todas las interfaces de \
+             red de este equipo, no solo en la que tienes en mente."
+                .into(),
+            "Esto no abre Nexo a Internet ni a redes fuera de la local: sigue sin haber \
+             reenvío de puertos ni acceso remoto de ningún tipo."
+                .into(),
+        ],
+        confirm_label: "Entiendo el riesgo y quiero activarlo".into(),
+    }
+}
+
 /// Conecta la suscripción de ChatGPT. `risk_acknowledged` debe venir de la
 /// aceptación explícita del aviso anterior.
 #[tauri::command]
@@ -348,9 +377,19 @@ pub fn load_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Value> {
+pub fn save_settings(
+    state: State<'_, AppState>,
+    settings: Settings,
+    lan_risk_acknowledged: bool,
+) -> CmdResult<Value> {
+    if settings.allow_lan && !lan_risk_acknowledged {
+        return Err(
+            "hay que aceptar el aviso antes de activar el acceso desde la red local".into(),
+        );
+    }
     state.nexo.db().save_settings(&settings).map_err(map_err)?;
-    // El puerto solo cambia al reiniciar: el gateway ya está escuchando.
+    // El puerto y el modo de red solo cambian al reiniciar: el gateway ya
+    // está escuchando con la configuración anterior.
     Ok(serde_json::json!({
         "saved": true,
         "restart_required": true,

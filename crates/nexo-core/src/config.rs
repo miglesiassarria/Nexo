@@ -42,10 +42,17 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// La dirección que `Settings` pide. No es necesariamente la que el
+    /// gateway usará de verdad: si el certificado de la red local no está
+    /// listo, `Nexo::prepare_gateway_bind` puede decidir `127.0.0.1` aunque
+    /// aquí `allow_lan` sea `true` — eso es una decisión de arranque, no de
+    /// configuración pura, y por eso vive en `service.rs`, no aquí.
     pub fn bind_addr(&self) -> std::net::SocketAddr {
-        // El acceso por red requiere autenticación, autorización y transporte
-        // seguro. Hasta que existan, `allow_lan` no cambia el bind.
-        std::net::SocketAddr::from(([127, 0, 0, 1], self.port))
+        if self.allow_lan {
+            std::net::SocketAddr::from(([0, 0, 0, 0], self.port))
+        } else {
+            std::net::SocketAddr::from(([127, 0, 0, 1], self.port))
+        }
     }
 }
 
@@ -68,12 +75,12 @@ mod tests {
     }
 
     #[test]
-    fn allow_lan_does_not_widen_the_bind_yet() {
+    fn allow_lan_widens_the_bind() {
         let s = Settings { allow_lan: true, ..Default::default() };
         assert_eq!(
             s.bind_addr().ip().to_string(),
-            "127.0.0.1",
-            "sin transporte seguro no se expone fuera de localhost"
+            "0.0.0.0",
+            "con el modo red activo, Settings pide todas las interfaces"
         );
     }
 }

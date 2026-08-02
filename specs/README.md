@@ -13,6 +13,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0005](0005-granularidad-horaria-y-tokens-de-entrada-y-salid/spec.md) | Periodos por horas y tokens de entrada/salida en el panel | `build` | El rollup horario no puede responder con exactitud a ventanas de menos de un día; para esas se consulta el detalle directamente |
 
 | [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `build` | El mecanismo de presets ya existía para esto; verificado contra `models.dev` real antes de fijar la URL |
+| [0007](0007-acceso-red-local/spec.md) | Acceso desde la red local | `hecho` | Requiere [ADR 0003](../docs/adr/0003-acceso-desde-la-red-local.md); verificado por test y contra el binario real instalado; falta el clic real en el interruptor (bloqueado por el mismo permiso de Accesibilidad de siempre) |
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no
