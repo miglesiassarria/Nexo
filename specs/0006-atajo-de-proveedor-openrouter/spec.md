@@ -37,7 +37,7 @@ proveedor igual de conocido y con 336 modelos en `models.dev`, no lo es.
 | 2 | El atajo de OpenRouter convive con el de Zen; ambos siguen distinguibles y sin identificadores repetidos | `cargo test -p nexo-core -- connect_options_cover_the_four_form_shapes` (test ya existente, no debe romperse) |
 | 3 | La URL del preset coincide exactamente (recortando solo la barra final) con la que `models.dev` declara para `openrouter`, así que `provider_id_for_api` la reconoce | Comprobado contra `https://models.dev/api.json` real antes de escribir el valor; queda anotado en `design.md` para que quien lo lea no tenga que volver a comprobarlo |
 | 4 | El texto de la opción genérica «Otro servicio OpenAI-compatible» ya no cita a OpenRouter como ejemplo de servicio sin atajo propio | Lectura de `service.rs`; `cargo test -p nexo-core -- the_generic_compatible_option` sigue en verde |
-| 5 | Conectar el atajo, pegar una API key real y refrescar el catálogo deja modelos de OpenRouter con precio y capacidades, no solo como texto sin enriquecer | Recorrido manual en `/build` con una clave real, si el usuario aporta una; si no, se deja constancia de que no se pudo verificar contra la realidad |
+| 5 | Conectar el atajo, pegar una API key real y refrescar el catálogo deja modelos de OpenRouter con precio y capacidades, no solo como texto sin enriquecer | **Verificado con clave real**: `cargo test -p nexo-core --test gateway_e2e -- --ignored openrouter`, contra la API real y el modelo gratuito `poolside/laguna-s-2.1:free` |
 
 ## Fuera de alcance
 
@@ -48,10 +48,10 @@ proveedor igual de conocido y con 336 modelos en `models.dev`, no lo es.
 - **Cualquier atajo adicional** (Groq, DeepSeek, Mistral, xAI) que `design.md`
   de la spec 0002 también anticipó. Se pidió solo OpenRouter; los demás se
   añaden igual de barato el día que se pidan, uno a uno.
-- **Verificación contra una cuenta de OpenRouter real con saldo**, si el
-  usuario no facilita una clave durante `/build`. La spec no se bloquea por
-  eso, pero el criterio 5 quedaría sin comprobar contra la realidad y así se
-  dirá.
+- **Arreglar la condición de carrera de `models.dev` en el arranque real**
+  (ver «Lo que se descubrió al construir» más abajo). Es un fallo del
+  producto, no de este atajo; se trata aparte, con su propia prueba de
+  reproducción, según exige `CLAUDE.md` para arreglos de fallo.
 
 ## Supuestos asumidos
 
@@ -72,11 +72,25 @@ proveedor igual de conocido y con 336 modelos en `models.dev`, no lo es.
   `openrouter`, el preset quedaría desalineado hasta que alguien lo note y
   actualice esa única constante — mismo riesgo que ya existe hoy con el
   preset de Zen, aceptado en la spec 0002.
-- Sin una clave real de OpenRouter durante `/build`, la única prueba posible
-  es unitaria (que el preset se ofrece con los datos correctos); no cubre que
-  OpenRouter siga aceptando el mismo formato de autenticación y catálogo que
-  hoy — riesgo compartido con cualquier proveedor OpenAI-compatible añadido
-  por el usuario, no específico de este atajo.
+## Lo que se descubrió al construir
+
+Al escribir la prueba del criterio 5 contra la API real, el catálogo llegó
+**sin enriquecer** (`priced: false`, `context_max` nulo) la primera vez, a
+pesar de que la caché de `models.dev` en disco sí tenía el precio y los
+límites del modelo. Causa real: `Nexo::new()` deja `models_dev` vacío a
+propósito, y nada en el arranque de la app garantiza que
+`refresh_models_dev()` termine antes de que `refresh_catalog_from_providers()`
+descubra los proveedores — `src-tauri/src/main.rs` lanza los dos como tareas
+de fondo independientes, sin ningún orden entre ellas. En la prueba se
+resolvió llamando a `refresh_models_dev()` antes de `add_custom_provider()`.
+En la aplicación real, esto significa que **cualquier proveedor** (Zen,
+OpenRouter, o el que sea) añadido en los primeros instantes tras abrir Nexo
+—mientras `models.dev` todavía se está cargando— puede quedarse con el
+catálogo sin enriquecer hasta el próximo refresco manual o reinicio. No es un
+fallo de esta spec ni de OpenRouter: es un fallo de orden de arranque que ya
+existía para Zen, solo que ninguna prueba anterior comprobaba el enriquecimiento
+lo bastante a fondo para notarlo. Anotado en «Fuera de alcance» para
+arreglarlo aparte.
 
 ## Invariantes que esto no puede romper
 

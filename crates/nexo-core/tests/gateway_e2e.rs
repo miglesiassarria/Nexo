@@ -1305,3 +1305,138 @@ async fn zen_insufficient_balance_is_a_clear_credits_error_not_invalid_key() {
         "reconectar la cuenta no arregla un problema de saldo"
     );
 }
+
+// ---------------------------------------------------------------------------
+// OpenRouter real (spec 0006). Marcadas `#[ignore]` porque exigen una clave:
+//   NEXO_TEST_OPENROUTER_API_KEY=sk-or-v1-... cargo test -p nexo-core --test gateway_e2e -- --ignored openrouter
+// ---------------------------------------------------------------------------
+
+const OPENROUTER_FREE_MODEL: &str = "openrouter/poolside/laguna-s-2.1:free";
+
+/// Monta un Nexo con OpenRouter añadido con el atajo de la spec 0006 (mismo
+/// adaptador genérico que Zen) y una aplicación con acceso. `None` si no hay
+/// clave en el entorno, para que la prueba se salte de forma explícita.
+async fn start_with_openrouter() -> Option<Harness> {
+    let Ok(key) = std::env::var("NEXO_TEST_OPENROUTER_API_KEY") else {
+        eprintln!("NEXO_TEST_OPENROUTER_API_KEY no está definida; prueba omitida");
+        return None;
+    };
+
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    // `Nexo::new()` deja `models_dev` vacío a propósito (lo rellena
+    // `refresh_models_dev`, que en la app real se dispara en segundo plano al
+    // arrancar). Sin este paso, `add_custom_provider` descubre el catálogo
+    // contra un `models_dev` vacío y ningún modelo queda enriquecido —
+    // encontrado al escribir esta prueba, ver spec 0006.
+    nexo.refresh_models_dev().await;
+
+    nexo.add_custom_provider("OpenRouter", "https://openrouter.ai/api/v1", &key)
+        .await
+        .expect("añadir el proveedor no debe fallar con una clave válida");
+
+    let issued = nexo.db().create_app("prueba-openrouter", None).expect("app");
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "openrouter".into(),
+                credential_kind: "api_key".into(),
+                model_pattern: "*".into(),
+                allow_tools: true,
+                allow_multimodal: false,
+                log_content: false,
+            },
+        )
+        .expect("grant");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Some(Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http: reqwest::Client::new(),
+    })
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_OPENROUTER_API_KEY"]
+async fn openrouter_discovers_its_real_catalog_and_enriches_it_with_models_dev() {
+    // Criterio 5 de la spec 0006: el catálogo no solo debe listar los modelos,
+    // tiene que traer precio y capacidades reales de models.dev, no solo texto.
+    let Some(h) = start_with_openrouter().await else { return };
+
+    let body: Value = h
+        .http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let models = body["data"].as_array().unwrap();
+    // OpenRouter tenía 337 modelos el 2026-08-02; se admite margen por si el
+    // catálogo cambia entre esa fecha y la ejecución de la prueba.
+    assert!(models.len() > 100, "esperaba cientos de modelos, llegaron {}", models.len());
+
+    let free = models
+        .iter()
+        .find(|m| m["id"] == OPENROUTER_FREE_MODEL)
+        .expect("el modelo gratuito de prueba debe estar en el catálogo real");
+    assert_eq!(free["nexo"]["credential_kind"], "api_key");
+    assert_eq!(
+        free["nexo"]["priced"], true,
+        "un modelo real de models.dev siempre trae precio, aunque sea cero por ser gratuito"
+    );
+    assert!(
+        !free["nexo"]["context_max"].is_null(),
+        "el límite de contexto debe venir de models.dev, no quedar sin dato"
+    );
+    for m in models {
+        assert!(m["id"].as_str().unwrap().starts_with("openrouter/"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_OPENROUTER_API_KEY"]
+async fn openrouter_chat_with_a_free_model_works_end_to_end() {
+    let Some(h) = start_with_openrouter().await else { return };
+
+    let resp = h
+        .post_chat(json!({
+            "model": OPENROUTER_FREE_MODEL,
+            "messages": [{"role": "user", "content": "Responde solo: OK"}],
+            "max_tokens": 20
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert!(!body["choices"][0]["message"]["content"].is_null());
+
+    let row = h
+        .nexo
+        .db()
+        .recent_requests(0, 5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .expect("la petición queda registrada");
+    assert_eq!(row.status, "ok");
+    assert_eq!(row.credential_kind, "api_key");
+    assert_eq!(row.provider_id, "openrouter");
+}
