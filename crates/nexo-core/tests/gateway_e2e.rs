@@ -75,6 +75,61 @@ async fn start_with_limit(max_requests: Option<i64>) -> Harness {
     }
 }
 
+/// Igual que `start()`, pero sirve por HTTPS con un certificado autofirmado
+/// real generado por `tls_cert::ensure()`, en un directorio de datos
+/// temporal. El cliente HTTP confía explícitamente en ese certificado (no en
+/// la CA del sistema): es el mismo modelo de confianza que tendría otro
+/// ordenador de la red tras aceptarlo a mano.
+async fn start_with_lan_tls() -> Harness {
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    let issued = nexo.db().create_app("prueba-lan", None).expect("app");
+    nexo.db()
+        .grant_with_mandatory_limit(
+            &issued.app.id,
+            "mock",
+            CredentialKind::Mock,
+            false,
+            false,
+            None,
+            None,
+        )
+        .expect("grant");
+
+    let data_dir = std::env::temp_dir().join(format!(
+        "nexo-gateway-e2e-tls-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("directorio temporal de datos");
+    let cert = nexo_core::tls_cert::ensure(&data_dir).expect("certificado de prueba");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let root_cert_pem = std::fs::read(&cert.cert_path).expect("leer el certificado generado");
+    let root_cert = reqwest::Certificate::from_pem(&root_cert_pem).expect("certificado válido");
+    let http = reqwest::Client::builder()
+        .add_root_certificate(root_cert)
+        .build()
+        .expect("cliente HTTPS de prueba");
+
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on_tls(serving, listener, &cert).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Harness {
+        base: format!("https://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http,
+    }
+}
+
 impl Harness {
     async fn post_chat(&self, body: Value) -> reqwest::Response {
         self.http
@@ -1490,5 +1545,123 @@ async fn a_provider_added_before_models_dev_loads_gets_enriched_once_it_does() {
     assert!(
         after.price_input.is_some(),
         "tras refresh_models_dev_then_catalogs el catálogo debe llegar enriquecido"
+    );
+}
+
+// -- Spec 0007: acceso desde la red local -----------------------------------
+
+/// Demuestra el criterio de aceptación 1 de la spec 0007 de punta a punta:
+/// con `allow_lan = false` (el valor por defecto, sin tocar nada), pasar por
+/// `Nexo::prepare_gateway_bind` y arrancar según su plan da exactamente el
+/// mismo comportamiento que existía antes de esta spec.
+#[tokio::test]
+async fn allow_lan_false_is_identical_to_today() {
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    let issued = nexo.db().create_app("prueba-local", None).expect("app");
+    nexo.db()
+        .grant_with_mandatory_limit(
+            &issued.app.id,
+            "mock",
+            CredentialKind::Mock,
+            false,
+            false,
+            None,
+            None,
+        )
+        .expect("grant");
+
+    let data_dir = std::env::temp_dir().join(format!(
+        "nexo-gateway-e2e-local-only-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("directorio temporal de datos");
+
+    let settings = nexo_core::config::Settings { port: 0, ..Default::default() };
+    assert!(!settings.allow_lan, "el valor por defecto debe seguir desactivado");
+
+    let plan = nexo.prepare_gateway_bind(&settings, &data_dir);
+    assert_eq!(plan.addr.ip().to_string(), "127.0.0.1");
+    assert!(plan.tls.is_none());
+    assert!(
+        !data_dir.join("tls").exists(),
+        "en modo local no debe generarse ningún certificado"
+    );
+
+    let listener = gateway::bind(plan.addr).await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    let h = Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo: nexo.clone(),
+        http: reqwest::Client::new(),
+    };
+    let body = h.simple_body(false);
+
+    let without_token = h
+        .http
+        .post(format!("{}/v1/chat/completions", h.base))
+        .json(&body)
+        .send()
+        .await
+        .expect("respuesta");
+    assert_eq!(without_token.status(), 401);
+
+    let with_token = h.post_chat(body).await;
+    assert!(with_token.status().is_success());
+
+    assert!(
+        !data_dir.join("tls").exists(),
+        "servir peticiones tampoco debe generar el certificado en modo local"
+    );
+}
+
+#[tokio::test]
+async fn lan_mode_serves_https_with_a_valid_request() {
+    let h = start_with_lan_tls().await;
+    let resp = h.post_chat(h.simple_body(false)).await;
+    assert!(
+        resp.status().is_success(),
+        "una petición HTTPS con token válido debe responder igual que en local"
+    );
+}
+
+#[tokio::test]
+async fn lan_mode_still_requires_the_app_token() {
+    let h = start_with_lan_tls().await;
+    let resp = h
+        .http
+        .post(format!("{}/v1/chat/completions", h.base))
+        .json(&h.simple_body(false))
+        .send()
+        .await
+        .expect("la petición HTTPS sin token debe llegar y responder, no fallar de red");
+    assert_eq!(
+        resp.status(),
+        401,
+        "el modo red no añade ni quita nada al requisito de token que ya existe"
+    );
+}
+
+#[tokio::test]
+async fn a_plain_http_request_to_the_tls_port_gets_no_valid_response() {
+    let h = start_with_lan_tls().await;
+    // Un cliente que intenta HTTP plano contra el puerto que ahora sirve
+    // HTTPS no debe recibir una respuesta válida del gateway.
+    let plain_url = h.base.replacen("https://", "http://", 1);
+    let result = reqwest::Client::new()
+        .get(format!("{plain_url}/healthz"))
+        .send()
+        .await;
+    assert!(
+        result.is_err(),
+        "HTTP plano contra el puerto TLS no debe obtener una respuesta válida"
     );
 }

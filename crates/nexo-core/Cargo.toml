@@ -7,11 +7,13 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1.91"
 axum = "0.8.9"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 base64 = "0.23.0"
 eventsource-stream = "0.2.3"
 futures = "0.3.33"
 keyring = { version = "4.1.5", features = ["apple-native-keyring-store"] }
 rand = "0.10.2"
+rcgen = "0.14.8"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls", "http2", "charset", "form", "query"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

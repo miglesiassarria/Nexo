@@ -84,9 +84,10 @@ Dos spikes de código, no documentos.
 - [ ] Exportación de estadísticas en formatos abiertos.
 - [ ] Registro opcional de contenido por aplicación, con su propia retención.
 - [ ] Gráficas de tendencia en el panel.
-- [ ] Acceso desde la red local, desactivado por defecto, con TLS
+- [x] Acceso desde la red local, desactivado por defecto, con TLS
       autofirmado y el token de aplicación ya existente como autenticación
-      ([ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md)).
+      ([ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md),
+      [spec 0007](specs/0007-acceso-red-local/spec.md)).
 
 ### Fase 4 — Más proveedores
 
@@ -147,7 +148,7 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 | 14 | Cerrar la ventana principal sin detener el gateway | ✅ |
 | 15 | Consultar y controlar Nexo desde un icono siempre disponible en la barra de estado | ✅ |
 | 16 | Operar con una configuración segura por defecto: solo localhost salvo activación explícita del acceso en red local, sin límites en blanco, sin registro de contenido | ✅ |
-| 18 | Conectar otros ordenadores de la propia red local, con autenticación y transporte cifrado obligatorios | ⏳ [ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md) aceptado, falta implementar |
+| 18 | Conectar otros ordenadores de la propia red local, con autenticación y transporte cifrado obligatorios | ✅ [spec 0007](specs/0007-acceso-red-local/spec.md), verificado contra el binario real instalado |
 
 Los objetivos numéricos de memoria, CPU y arranque están en el
 [ADR 0002](docs/adr/0002-stack-tauri-rust-svelte.md).

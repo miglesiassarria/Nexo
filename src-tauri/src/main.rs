@@ -64,6 +64,7 @@ fn main() {
             commands::recent_requests,
             commands::load_settings,
             commands::save_settings,
+            commands::lan_risk_notice,
             commands::purge_stats,
             commands::apply_retention,
             commands::set_paused,
@@ -75,16 +76,34 @@ fn main() {
             // El gateway vive en el mismo proceso y sigue sirviendo con la
             // ventana cerrada.
             let gateway_nexo = nexo.clone();
-            let addr = settings.bind_addr();
+
+            // Decide la dirección y, si hace falta, el certificado —
+            // probado en `Nexo::prepare_gateway_bind` sin depender de
+            // Tauri. Si el modo red está pedido pero el certificado no se
+            // pudo preparar, el plan ya cae a 127.0.0.1 y deja el motivo en
+            // `bind_error`, así que aquí solo hace falta seguir el plan.
+            let data_dir = nexo_core::service::default_db_path()
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let plan = nexo.prepare_gateway_bind(&settings, &data_dir);
+            let addr = plan.addr;
 
             // El puerto se reserva de forma síncrona: si está ocupado, el
             // panel debe decirlo en lugar de mostrarse como activo.
             match tauri::async_runtime::block_on(nexo_core::gateway::bind(addr)) {
                 Ok(listener) => {
-                    tracing::info!(%addr, "gateway escuchando");
+                    tracing::info!(%addr, tls = plan.tls.is_some(), "gateway escuchando");
                     let reporting = nexo.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(e) = nexo_core::gateway::serve_on(gateway_nexo, listener).await {
+                        let result = match plan.tls {
+                            Some(cert) => {
+                                nexo_core::gateway::serve_on_tls(gateway_nexo, listener, &cert)
+                                    .await
+                            }
+                            None => nexo_core::gateway::serve_on(gateway_nexo, listener).await,
+                        };
+                        if let Err(e) = result {
                             tracing::error!(error = %e, "el gateway se detuvo");
                             reporting.set_bind_error(Some(format!(
                                 "el gateway se detuvo: {e}"

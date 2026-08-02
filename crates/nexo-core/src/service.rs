@@ -48,6 +48,10 @@ pub struct Nexo {
     /// Motivo por el que el gateway no está escuchando, si no lo está.
     /// Sin esto, un puerto ocupado dejaría el panel diciendo «Activo».
     bind_error: std::sync::RwLock<Option<String>>,
+    /// Cómo conectar desde otro equipo, si el modo red está realmente activo
+    /// (no solo pedido en `Settings`: si el certificado falló, esto queda en
+    /// `None` aunque `allow_lan` sea `true`).
+    lan_info: std::sync::RwLock<Option<LanAccessInfo>>,
     /// Serializa la renovación de tokens por cuenta: una sola en vuelo.
     refresh_locks: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -101,6 +105,7 @@ impl Nexo {
             policy,
             paused: AtomicBool::new(false),
             bind_error: std::sync::RwLock::new(None),
+            lan_info: std::sync::RwLock::new(None),
             refresh_locks: tokio::sync::Mutex::new(HashMap::new()),
         });
 
@@ -150,6 +155,65 @@ impl Nexo {
     /// El gateway solo está sirviendo si reservó el puerto y no está en pausa.
     pub fn is_listening(&self) -> bool {
         self.bind_error().is_none()
+    }
+
+    fn set_lan_info(&self, info: Option<LanAccessInfo>) {
+        if let Ok(mut slot) = self.lan_info.write() {
+            *slot = info;
+        }
+    }
+
+    pub fn lan_info(&self) -> Option<LanAccessInfo> {
+        self.lan_info.read().ok().and_then(|s| s.clone())
+    }
+
+    /// Decide con qué dirección y con qué certificado (si hace falta)
+    /// arranca el gateway. No reserva el puerto: eso lo sigue haciendo quien
+    /// llama, de forma síncrona, igual que hoy — esta función solo decide el
+    /// plan, para que sea comprobable con `cargo test` sin pasar por Tauri.
+    ///
+    /// Si `allow_lan` es `true` pero el certificado no se puede preparar,
+    /// el plan cae a `127.0.0.1` sin TLS — nunca a `0.0.0.0` sin TLS — y
+    /// deja el motivo en `bind_error()`, reutilizando el mismo canal que ya
+    /// existe para «el puerto está ocupado».
+    pub fn prepare_gateway_bind(
+        &self,
+        settings: &Settings,
+        data_dir: &std::path::Path,
+    ) -> GatewayBindPlan {
+        if !settings.allow_lan {
+            self.set_lan_info(None);
+            return GatewayBindPlan {
+                addr: settings.bind_addr(),
+                tls: None,
+            };
+        }
+
+        match crate::tls_cert::ensure(data_dir) {
+            Ok(cert) => {
+                self.set_lan_info(Some(LanAccessInfo {
+                    address: cert.address.map(|ip| ip.to_string()),
+                    port: settings.port,
+                    cert_fingerprint_sha256: cert.fingerprint_sha256.clone(),
+                    cert_path: cert.cert_path.display().to_string(),
+                }));
+                GatewayBindPlan {
+                    addr: settings.bind_addr(),
+                    tls: Some(cert),
+                }
+            }
+            Err(e) => {
+                self.set_lan_info(None);
+                self.set_bind_error(Some(format!(
+                    "no se pudo preparar el certificado para la red local: {e}. \
+                     Nexo sigue escuchando solo en 127.0.0.1."
+                )));
+                GatewayBindPlan {
+                    addr: std::net::SocketAddr::from(([127, 0, 0, 1], settings.port)),
+                    tls: None,
+                }
+            }
+        }
     }
 
     /// Escribe el manifiesto de modelos en el catálogo, por vía de acceso.
@@ -1477,6 +1541,7 @@ impl Nexo {
             apps: self.db.apps()?.iter().filter(|a| a.revoked_at.is_none()).count(),
             apps_missing_limits: self.db.apps_missing_mandatory_limits()?,
             manifest_version: catalog::MANIFEST_VERSION.to_string(),
+            lan: self.lan_info(),
         })
     }
 
@@ -1819,6 +1884,26 @@ pub struct GatewayStatus {
     /// Incumplimientos de la invariante del ADR 0001.
     pub apps_missing_limits: Vec<String>,
     pub manifest_version: String,
+    /// Presente solo si el modo red está realmente activo (certificado
+    /// preparado y gateway escuchando en `0.0.0.0`), no solo pedido.
+    pub lan: Option<LanAccessInfo>,
+}
+
+/// Dirección para conectar desde otro equipo de la red, y cómo identificar
+/// el certificado autofirmado para aceptarlo a conciencia en ese equipo.
+#[derive(Debug, Clone, Serialize)]
+pub struct LanAccessInfo {
+    pub address: Option<String>,
+    pub port: u16,
+    pub cert_fingerprint_sha256: String,
+    pub cert_path: String,
+}
+
+/// Qué dirección usar y, si hace falta, con qué certificado. Ver
+/// `Nexo::prepare_gateway_bind`.
+pub struct GatewayBindPlan {
+    pub addr: std::net::SocketAddr,
+    pub tls: Option<crate::tls_cert::LanCertificate>,
 }
 
 #[cfg(test)]
@@ -2957,5 +3042,75 @@ mod tests {
         }));
         // La misma instancia de adaptador ve el cambio: no hace falta reconstruirlo.
         assert_eq!(n.models_dev.read().await.provider_count(), 1);
+    }
+
+    // -- Spec 0007: acceso desde la red local --------------------------------
+
+    fn temp_data_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexo-service-lan-test-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn prepare_gateway_bind_with_allow_lan_false_changes_nothing() {
+        let n = nexo();
+        let settings = Settings { allow_lan: false, ..Default::default() };
+        let dir = temp_data_dir("local");
+
+        let plan = n.prepare_gateway_bind(&settings, &dir);
+
+        assert_eq!(plan.addr.ip().to_string(), "127.0.0.1");
+        assert!(plan.tls.is_none());
+        assert!(n.lan_info().is_none());
+        assert!(
+            !dir.join("tls").exists(),
+            "en modo local no debe tocarse el certificado en absoluto"
+        );
+    }
+
+    #[test]
+    fn prepare_gateway_bind_with_a_ready_certificate_widens_the_bind() {
+        let n = nexo();
+        let settings = Settings { allow_lan: true, port: 9191, ..Default::default() };
+        let dir = temp_data_dir("ready");
+
+        let plan = n.prepare_gateway_bind(&settings, &dir);
+
+        assert_eq!(plan.addr.ip().to_string(), "0.0.0.0");
+        assert_eq!(plan.addr.port(), 9191);
+        assert!(plan.tls.is_some());
+        let info = n.lan_info().expect("debe publicarse la info de conexión");
+        assert_eq!(info.port, 9191);
+        assert!(!info.cert_fingerprint_sha256.is_empty());
+        assert!(n.bind_error().is_none());
+    }
+
+    #[test]
+    fn prepare_gateway_bind_falls_back_to_loopback_when_the_certificate_is_broken() {
+        let n = nexo();
+        let settings = Settings { allow_lan: true, ..Default::default() };
+        let dir = temp_data_dir("broken");
+        let tls_dir = dir.join("tls");
+        std::fs::create_dir_all(&tls_dir).unwrap();
+        std::fs::write(tls_dir.join("cert.pem"), "no es un certificado").unwrap();
+        std::fs::write(tls_dir.join("key.pem"), "no es una clave").unwrap();
+
+        let plan = n.prepare_gateway_bind(&settings, &dir);
+
+        assert_eq!(
+            plan.addr.ip().to_string(),
+            "127.0.0.1",
+            "un certificado roto nunca debe servir en 0.0.0.0 sin TLS"
+        );
+        assert!(plan.tls.is_none());
+        assert!(n.lan_info().is_none());
+        assert!(
+            n.bind_error().is_some(),
+            "el fallo debe quedar visible, no en silencio"
+        );
     }
 }

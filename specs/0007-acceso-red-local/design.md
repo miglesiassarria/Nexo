@@ -190,14 +190,17 @@ más de una, todas documentadas en su API pública); no cambia el resto del
 diseño, solo el nombre de la llamada. Se anota aquí para que `/tasks` incluya
 verificarlo como primer paso, antes de construir el resto encima.
 
-### 6. El certificado no expira en un plazo corto, de forma explícita
+### 6. El certificado no expira en un plazo corto
 
-**Decisión.** `tls_cert::ensure()` fija `not_after` a una fecha lejana (varias
-décadas) en vez de aceptar el valor por defecto de `rcgen`, y un test
-comprueba que la fecha de expiración generada está, como mínimo, a 10 años
-vista. Un certificado que caduca solo es una forma de romper el modo red en
-silencio semanas o meses después de activarlo, exactamente el tipo de fallo
-que este proyecto ya se ha encontrado por no probar contra la realidad.
+**Decisión revisada tras leer el código real de `rcgen` 0.14.8** (no se
+aceptó de memoria): `CertificateParams::default()`, que es lo que usa
+internamente `generate_simple_self_signed`, ya fija `not_after` al año 4096
+(`rcgen-0.14.8/src/certificate.rs:84`). No hace falta pisar ese valor a mano;
+hacerlo sería resolver un problema que no existe. Lo que sí se añade es un
+test que comprueba que la fecha de expiración del certificado generado está,
+como mínimo, a 10 años vista — no para forzar el valor, sino para que un
+cambio de esa librería en una actualización futura se note en `cargo test`
+en vez de en un fallo de TLS meses después de activar el modo red.
 
 ### 7. Alcance de familia de IP: solo IPv4
 

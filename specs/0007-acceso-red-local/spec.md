@@ -1,6 +1,6 @@
 # 0007 · Acceso desde la red local
 
-- **Estado:** tasks
+- **Estado:** hecho
 - **Creada:** 2026-08-02
 - **Pedida por:** Manuel Iglesias — *"quiero implementar la opcion para
   permitir servir nexo al resto de equipos de la red"*, acotado después a
@@ -62,17 +62,17 @@ en uso".
 
 ## Criterios de aceptación
 
-| # | Criterio | Cómo se verifica |
-| --- | --- | --- |
-| 1 | Con `allow_lan = false` (el valor por defecto), el comportamiento es idéntico al actual: bind en `127.0.0.1`, HTTP plano, token de aplicación obligatorio, sin ningún fichero de certificado generado. | `cargo test -p nexo-core -- allow_lan_false_is_identical_to_today` (test nuevo de regresión: arranca, comprueba `bind_addr`, hace una petición sin token y espera 401, comprueba que no existe fichero de certificado en el directorio de datos) |
-| 2 | Con `allow_lan = true` guardado y Nexo reiniciado, el gateway escucha en `0.0.0.0:<puerto>` y responde por HTTPS con el certificado autofirmado generado por Nexo; una conexión por HTTP plano a ese mismo puerto no obtiene una respuesta válida del gateway. | `cargo test -p nexo-core -- lan_mode_serves_https_not_http` |
-| 3 | El token de aplicación sigue siendo obligatorio en modo red: una petición HTTPS sin `Authorization: Bearer` válido se rechaza con 401, igual que hoy en local. | `cargo test -p nexo-core -- lan_mode_still_requires_the_app_token` |
-| 4 | El certificado se genera solo la primera vez que hace falta y se reutiliza en arranques siguientes (mismo fingerprint) mientras no se borre el fichero. | `cargo test -p nexo-core -- the_certificate_is_generated_once_and_reused` |
-| 5 | Si el certificado no puede generarse o leerse (p. ej. fichero corrupto o sin permisos), Nexo no sirve en `0.0.0.0` y reporta un error explícito de arranque; en ningún caso cae a HTTP plano en esa interfaz. | `cargo test -p nexo-core -- a_broken_certificate_refuses_lan_bind_instead_of_falling_back` |
-| 6 | La Configuración muestra el interruptor desactivado por defecto, con una advertencia explícita que hay que confirmar antes de poder activarlo. | Revisión de `Settings.svelte` + verificación manual en la app instalada |
-| 7 | Con el modo activo, el panel muestra la dirección (IP:puerto) para conectar desde otro equipo y una forma de identificar el certificado (huella SHA-256 y ruta del fichero) para aceptarlo a conciencia en el otro dispositivo. | Revisión de `Settings.svelte` + verificación manual |
-| 8 | Cambiar el interruptor exige reiniciar Nexo para aplicarse, y el panel lo dice, igual que ya ocurre con el puerto. | Revisión de `commands::save_settings` / mensaje de la UI |
-| 9 | Verificación completa del repositorio en verde y aplicación instalada. | `cargo test --workspace && cargo clippy --workspace --all-targets && npm run check` + `npm run app:install` |
+| # | Criterio | Cómo se verifica | Resultado |
+| --- | --- | --- | --- |
+| 1 | Con `allow_lan = false` (el valor por defecto), el comportamiento es idéntico al actual: bind en `127.0.0.1`, HTTP plano, token de aplicación obligatorio, sin ningún fichero de certificado generado. | `cargo test -p nexo-core --test gateway_e2e -- allow_lan_false_is_identical_to_today` | ✅ Verificado por test y contra la app real instalada (tras reinstalar, `curl http://127.0.0.1:8787/healthz` responde igual que siempre) |
+| 2 | Con `allow_lan = true` guardado y Nexo reiniciado, el gateway escucha en `0.0.0.0:<puerto>` y responde por HTTPS con el certificado autofirmado generado por Nexo; una conexión por HTTP plano a ese mismo puerto no obtiene una respuesta válida del gateway. | `cargo test -p nexo-core --test gateway_e2e -- lan_mode_serves_https_with_a_valid_request a_plain_http_request_to_the_tls_port_gets_no_valid_response` | ✅ Verificado por test **y** contra el binario real instalado: `NEXO_DATA_DIR` temporal, `allow_lan=1` escrito directamente en el SQLite, arranque real → log `gateway escuchando addr=0.0.0.0:9799 tls=true`; `curl --cacert` con el certificado generado responde `200`, `curl` sin confiar en él lo rechaza como autofirmado, y HTTP plano contra ese puerto falla (`HTTP/0.9` inválido) |
+| 3 | El token de aplicación sigue siendo obligatorio en modo red: una petición HTTPS sin `Authorization: Bearer` válido se rechaza con 401, igual que hoy en local. | `cargo test -p nexo-core --test gateway_e2e -- lan_mode_still_requires_the_app_token` | ✅ |
+| 4 | El certificado se genera solo la primera vez que hace falta y se reutiliza en arranques siguientes (mismo fingerprint) mientras no se borre el fichero. | `cargo test -p nexo-core -- tls_cert::tests::reuses_the_same_certificate_and_fingerprint_across_calls` | ✅ Verificado por test. El intento de repetirlo contra el binario real reinstalando y relanzando no aportó nada nuevo: el primer proceso seguía vivo por una limitación de control de trabajos entre llamadas de esta sesión, así que esa repetición manual no reinició de verdad nada — se anota para no reclamar una comprobación que no ocurrió; la evidencia real de este criterio es el test unitario |
+| 5 | Si el certificado no puede generarse o leerse (p. ej. fichero corrupto o sin permisos), Nexo no sirve en `0.0.0.0` y reporta un error explícito de arranque; en ningún caso cae a HTTP plano en esa interfaz. | `cargo test -p nexo-core -- service::tests::prepare_gateway_bind_falls_back_to_loopback_when_the_certificate_is_broken tls_cert::tests::a_corrupt_certificate_file_is_reported_and_not_silently_regenerated` | ✅ |
+| 6 | La Configuración muestra el interruptor desactivado por defecto, con una advertencia explícita que hay que confirmar antes de poder activarlo. | `npm run check` + revisión de `Settings.svelte` | ⚠️ Implementado y sin errores de tipos; **no verificado por clic real** — requiere el permiso de Accesibilidad de macOS para automatizar la interfaz, que no se ha concedido en esta ni en sesiones anteriores (mismo límite ya señalado en las specs 0005 y 0006) |
+| 7 | Con el modo activo, el panel muestra la dirección (IP:puerto) para conectar desde otro equipo y una forma de identificar el certificado (huella SHA-256 y ruta del fichero) para aceptarlo a conciencia en el otro dispositivo. | `npm run check` + revisión de `Settings.svelte`; los datos que consume (`GatewayStatus.lan`) están cubiertos por los tests de `prepare_gateway_bind` | ⚠️ Igual que el criterio 6: los datos están verificados, el renderizado no se pudo clicar |
+| 8 | Cambiar el interruptor exige reiniciar Nexo para aplicarse, y el panel lo dice, igual que ya ocurre con el puerto. | Revisión de `commands::save_settings` / mensaje de la UI | ✅ Por código: el mensaje se actualizó y `bind_addr`/el plan de arranque solo se leen una vez, al arrancar |
+| 9 | Verificación completa del repositorio en verde y aplicación instalada. | `cargo test --workspace && cargo clippy --workspace --all-targets && npm run check` + `npm run app:install` | ✅ 273 tests + 28 e2e (11 ignorados) en verde, clippy sin avisos, check sin errores; compilado e instalado `Aug 2 17:41:34 2026` |
 
 ## Fuera de alcance
 
@@ -151,6 +151,21 @@ en uso".
   huella (ataque de tipo *trust-on-first-use*). Es una limitación conocida y
   aceptada de este mecanismo frente a un certificado firmado por una CA
   pública, que aquí no es viable sin un dominio propio.
+
+## Lo que se descubrió al construir
+
+- **`rcgen` 0.14.8 ya fija `not_after` al año 4096 por defecto.** El diseño
+  preveía tener que fijarlo a mano; al leer el código fuente real de la
+  librería (no de memoria) resultó innecesario. Se dejó un test que
+  comprueba el valor igualmente, para detectar un cambio de esa librería en
+  el futuro sin esperar a que fallara un `handshake` TLS meses después.
+- **Conectar desde un segundo dispositivo físico de la red no se pudo
+  probar.** Todas las verificaciones contra el binario real instalado se
+  hicieron desde la misma máquina (con `curl` contra `127.0.0.1` y el puerto
+  de red), porque no había un segundo equipo disponible en esta sesión. El
+  SAN del certificado sí incluye la IP de red detectada (cubierto por test),
+  pero que un ordenador distinto la acepte y conecte de verdad queda como
+  algo pendiente de confirmar en el uso real.
 
 ## Invariantes que esto no puede romper
 
