@@ -120,6 +120,15 @@ que el usuario activó como añadido, no como su uso principal. Caer al modo
 que ya funcionaba es la opción que no degrada en silencio (el error se ve) y
 tampoco convierte un fallo de una parte en un fallo total.
 
+**Dónde vive la decisión.** No en `main.rs` directamente: la lógica de "qué
+dirección y si hay TLS" se extrae a `Nexo::prepare_gateway_bind(&self,
+settings: &Settings) -> GatewayBindPlan` en `service.rs` (mismo motivo que
+`refresh_models_dev_then_catalogs` — lo que decide algo se pone donde se
+puede probar con `cargo test -p nexo-core`, no dentro del binario de Tauri,
+que no tiene batería de pruebas). `main.rs` solo la llama, reserva el puerto
+que esa función decide y elige `serve_on` o `serve_on_tls` según el
+resultado.
+
 **Cómo se detecta cuando se rompe.** Test que fuerza el fallo (fichero
 `tls/cert.pem` con contenido corrupto antes de arrancar) y comprueba que:
 `bind_addr` efectivo es `127.0.0.1`, `bind_error()` no es `None`, y una

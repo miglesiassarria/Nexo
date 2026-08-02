@@ -1,6 +1,6 @@
 # 0007 · Acceso desde la red local
 
-- **Estado:** design
+- **Estado:** tasks
 - **Creada:** 2026-08-02
 - **Pedida por:** Manuel Iglesias — *"quiero implementar la opcion para
   permitir servir nexo al resto de equipos de la red"*, acotado después a
