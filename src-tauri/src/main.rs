@@ -123,19 +123,18 @@ fn main() {
                 }
             });
 
-            // `models.dev` se descarga (o se cachea) en segundo plano: si falla,
-            // los proveedores añadidos por el usuario siguen funcionando, solo
-            // que sus modelos aparecen como texto en lugar de con capacidades y
-            // precio reales.
-            let models_dev_nexo = nexo.clone();
-            tauri::async_runtime::spawn(async move {
-                let providers = models_dev_nexo.refresh_models_dev().await;
-                tracing::info!(providers, "models.dev cargado");
-            });
-
+            // `models.dev` se descarga (o se cachea) y SOLO ENTONCES se
+            // descubre el catálogo de cada proveedor — en una sola tarea de
+            // fondo, no en dos sin orden entre ellas. Antes eran dos spawns
+            // independientes: si el descubrimiento terminaba antes que la
+            // carga de `models.dev` (plausible con caché fría), el proveedor
+            // se quedaba con el catálogo sin precio ni capacidades hasta el
+            // próximo refresco manual. Si falla, los proveedores añadidos por
+            // el usuario siguen funcionando, solo que sus modelos aparecen
+            // como texto en lugar de con capacidades y precio reales.
             let catalog_nexo = nexo.clone();
             tauri::async_runtime::spawn(async move {
-                for result in catalog_nexo.refresh_catalog_from_providers().await {
+                for result in catalog_nexo.refresh_models_dev_then_catalogs().await {
                     if let Some(error) = &result.error {
                         tracing::warn!(
                             provider = %result.provider_id,

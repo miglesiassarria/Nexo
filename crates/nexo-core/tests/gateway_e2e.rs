@@ -1440,3 +1440,55 @@ async fn openrouter_chat_with_a_free_model_works_end_to_end() {
     assert_eq!(row.credential_kind, "api_key");
     assert_eq!(row.provider_id, "openrouter");
 }
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_OPENROUTER_API_KEY"]
+async fn a_provider_added_before_models_dev_loads_gets_enriched_once_it_does() {
+    // Reproduce el fallo real encontrado al probar la spec 0006: `Nexo::new()`
+    // deja `models_dev` vacío a propósito, y antes de este arreglo nada
+    // garantizaba que se cargara antes de que se añadiera un proveedor. Un
+    // proveedor añadido en ese momento se quedaba con el catálogo sin precio
+    // ni capacidades hasta el próximo refresco — le pasaba a cualquiera, no
+    // solo a OpenRouter.
+    let Ok(key) = std::env::var("NEXO_TEST_OPENROUTER_API_KEY") else {
+        eprintln!("NEXO_TEST_OPENROUTER_API_KEY no está definida; prueba omitida");
+        return;
+    };
+
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    // A propósito, sin cargar antes `models.dev`: es el escenario exacto que
+    // reprodujo el fallo.
+    nexo.add_custom_provider("OpenRouter", "https://openrouter.ai/api/v1", &key)
+        .await
+        .expect("añadir el proveedor no debe fallar con una clave válida");
+
+    let before = nexo
+        .db()
+        .catalog_rows()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.api_id == OPENROUTER_FREE_MODEL.trim_start_matches("openrouter/"))
+        .expect("el modelo gratuito debe descubrirse aunque no esté enriquecido");
+    assert!(
+        before.price_input.is_none(),
+        "sin haber cargado antes models.dev, el catálogo no puede llegar enriquecido"
+    );
+
+    // El arreglo: el mismo camino único que ahora usa el arranque real
+    // (main.rs ya no lanza las dos tareas por separado).
+    nexo.refresh_models_dev_then_catalogs().await;
+
+    let after = nexo
+        .db()
+        .catalog_rows()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.api_id == OPENROUTER_FREE_MODEL.trim_start_matches("openrouter/"))
+        .expect("el modelo gratuito sigue en el catálogo");
+    assert!(
+        after.price_input.is_some(),
+        "tras refresh_models_dev_then_catalogs el catálogo debe llegar enriquecido"
+    );
+}
