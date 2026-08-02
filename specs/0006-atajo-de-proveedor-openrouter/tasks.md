@@ -29,10 +29,14 @@ repositorio queda funcionando después de cada una.
     lo mismo que en la spec 0005 requería el acceso de accesibilidad que no se
     concedió. Cubierto en su lugar por el test de T1, que comprueba
     exactamente los datos que `Providers.svelte` va a pintar (el frontend lee
-    `connect_options()` sin ningún nombre de proveedor hardcodeado). **Tampoco
-    verificado**: el criterio 5 (catálogo real con clave de OpenRouter) — no
-    se aportó ninguna clave, tal como la propia spec anticipaba en "Fuera de
-    alcance".
+    `connect_options()` sin ningún nombre de proveedor hardcodeado).
+    **Criterio 5 sí verificado**: el usuario aportó una clave real de
+    OpenRouter. `openrouter_discovers_its_real_catalog_and_enriches_it_with_models_dev`
+    y `openrouter_chat_with_a_free_model_works_end_to_end` (nuevas, en
+    `crates/nexo-core/tests/gateway_e2e.rs`) pasan contra la API real con el
+    modelo gratuito `poolside/laguna-s-2.1:free`. Al escribirlas se encontró un
+    fallo no relacionado con OpenRouter (ver nota abajo), corregido solo en la
+    prueba; el fallo real del producto se deja para su propio arreglo.
 
 ## Cierre
 
