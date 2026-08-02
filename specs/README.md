@@ -12,7 +12,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0004](0004-modelos-permitidos-por-aplicacion/spec.md) | Elegir qué modelos sirve Nexo a cada aplicación | `build` | La mitad del almacenamiento ya existía sin usarse; el catálogo no aplicaba la misma regla que el gateway |
 | [0005](0005-granularidad-horaria-y-tokens-de-entrada-y-salid/spec.md) | Periodos por horas y tokens de entrada/salida en el panel | `build` | El rollup horario no puede responder con exactitud a ventanas de menos de un día; para esas se consulta el detalle directamente |
 
-| [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `tasks` | El mecanismo de presets ya existía para esto; verificado contra `models.dev` real antes de fijar la URL |
+| [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `build` | El mecanismo de presets ya existía para esto; verificado contra `models.dev` real antes de fijar la URL |
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

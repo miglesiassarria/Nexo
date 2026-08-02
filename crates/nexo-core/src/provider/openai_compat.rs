@@ -37,9 +37,19 @@ pub const OPENCODE_ZEN: ProviderPreset = ProviderPreset {
     docs_url: "https://opencode.ai/docs/zen",
 };
 
+/// Verificado contra `https://models.dev/api.json` real el 2026-08-02: la
+/// entrada `openrouter` declara `api` y `doc` exactamente con estos valores.
+/// `provider_id_for_api` compara esa URL byte a byte (solo recorta la barra
+/// final), así que tiene que coincidir de verdad, no de memoria.
+pub const OPENROUTER: ProviderPreset = ProviderPreset {
+    suggested_name: "OpenRouter",
+    base_url: "https://openrouter.ai/api/v1",
+    docs_url: "https://openrouter.ai/models",
+};
+
 /// Preajustes que ofrece la interfaz, en el orden en que se muestran.
 pub fn presets() -> &'static [ProviderPreset] {
-    &[OPENCODE_ZEN]
+    &[OPENCODE_ZEN, OPENROUTER]
 }
 
 pub struct OpenAiCompatAdapter {

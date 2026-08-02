@@ -1,6 +1,6 @@
 # 0006 · Atajo de proveedor: OpenRouter
 
-- **Estado:** tasks
+- **Estado:** build
 - **Creada:** 2026-08-02
 - **Pedida por:** el usuario, tras terminar la spec 0005: «ahora quiero añadir el
   proveedor de open router dejandolo listo solo para ponerle nombre y el api key»
