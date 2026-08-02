@@ -1087,7 +1087,7 @@ impl Nexo {
         out.push(ConnectOption {
             id: "compat:custom".into(),
             name: "Otro servicio OpenAI-compatible".into(),
-            summary: "OpenRouter, un proxy propio, un servidor de tu empresa… Puedes añadir varios, cada uno con su nombre.".into(),
+            summary: "Groq, un proxy propio, un servidor de tu empresa… Puedes añadir varios, cada uno con su nombre.".into(),
             form: ConnectForm::CompatEndpoint {
                 suggested_name: String::new(),
                 base_url: String::new(),
@@ -2796,6 +2796,27 @@ mod tests {
     }
 
     #[test]
+    fn the_openrouter_shortcut_arrives_with_its_name_and_address_filled() {
+        let options = nexo().connect_options().unwrap();
+        let openrouter = options
+            .iter()
+            .find(|o| o.name == "OpenRouter")
+            .expect("el atajo de OpenRouter debe ofrecerse");
+
+        match &openrouter.form {
+            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+                assert_eq!(suggested_name, "OpenRouter");
+                assert_eq!(base_url, "https://openrouter.ai/api/v1");
+            }
+            other => panic!("OpenRouter no es un endpoint compatible: {other:?}"),
+        }
+        assert!(openrouter.docs_url.is_some());
+
+        // Convive con Zen: mismo mecanismo, atajos distintos y sin ids repetidos.
+        assert!(options.iter().any(|o| o.name == "OpenCode Zen"));
+    }
+
+    #[test]
     fn the_generic_compatible_option_leaves_every_field_empty() {
         let options = nexo().connect_options().unwrap();
         let generic = options
@@ -2813,6 +2834,11 @@ mod tests {
         assert!(
             generic.id == "compat:custom",
             "el caso general va al final de la lista"
+        );
+        assert!(
+            !generic.summary.contains("OpenRouter"),
+            "OpenRouter ya tiene su propio atajo, no debe seguir citado como ejemplo \
+             de servicio sin atajo propio"
         );
     }
 
