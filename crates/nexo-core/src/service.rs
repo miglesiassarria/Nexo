@@ -304,6 +304,23 @@ impl Nexo {
         count
     }
 
+    /// Igual que llamar a `refresh_models_dev` y `refresh_catalog_from_providers`
+    /// por separado, pero garantizando el orden entre las dos.
+    ///
+    /// Encontrado al probar la spec 0006 contra OpenRouter real: `main.rs`
+    /// lanzaba las dos como tareas de fondo independientes, sin ningún orden
+    /// entre ellas. Si el descubrimiento de un proveedor terminaba antes de que
+    /// `models.dev` acabara de cargarse (plausible con la caché fría, que
+    /// implica una descarga por red de ~3,3 MB), ese proveedor se quedaba con
+    /// el catálogo sin precio ni capacidades hasta el próximo refresco manual o
+    /// el siguiente arranque — le pasaba a cualquier proveedor, no solo a
+    /// OpenRouter. Esta función es el único sitio que debe llamarse al
+    /// arrancar; separarla otra vez en dos tareas sin orden reintroduce el fallo.
+    pub async fn refresh_models_dev_then_catalogs(&self) -> Vec<CatalogRefresh> {
+        self.refresh_models_dev().await;
+        self.refresh_catalog_from_providers().await
+    }
+
     /// Pregunta a cada proveedor conectado qué modelos ofrece realmente y
     /// reemplaza su parte del catálogo.
     ///
