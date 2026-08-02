@@ -26,8 +26,10 @@ dejar de meter API keys en sus propias herramientas.
 Fuera de la primera versión: Google Gemini, Anthropic, MLX, llama.cpp,
 capacidades multimodales y la superficie compatible con el formato de Anthropic.
 
-Fuera del proyecto: multiusuario, sincronización entre equipos, acceso remoto y
-despliegue empresarial.
+Fuera del proyecto: multiusuario, sincronización entre equipos, acceso remoto
+fuera de la red local y despliegue empresarial. Conectar otros ordenadores de
+la propia red local del usuario sí está dentro de alcance, ver
+[ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md).
 
 ## Fases
 
@@ -82,6 +84,9 @@ Dos spikes de código, no documentos.
 - [ ] Exportación de estadísticas en formatos abiertos.
 - [ ] Registro opcional de contenido por aplicación, con su propia retención.
 - [ ] Gráficas de tendencia en el panel.
+- [ ] Acceso desde la red local, desactivado por defecto, con TLS
+      autofirmado y el token de aplicación ya existente como autenticación
+      ([ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md)).
 
 ### Fase 4 — Más proveedores
 
@@ -141,7 +146,8 @@ Nexo podrá considerarse útil cuando un usuario pueda:
 | 13 | Recibir un error comprensible, y el respaldo por API key si lo configuró, cuando la vía de suscripción deje de funcionar | ✅ |
 | 14 | Cerrar la ventana principal sin detener el gateway | ✅ |
 | 15 | Consultar y controlar Nexo desde un icono siempre disponible en la barra de estado | ✅ |
-| 16 | Operar con una configuración segura por defecto: solo localhost, sin límites en blanco, sin registro de contenido | ✅ |
+| 16 | Operar con una configuración segura por defecto: solo localhost salvo activación explícita del acceso en red local, sin límites en blanco, sin registro de contenido | ✅ |
+| 18 | Conectar otros ordenadores de la propia red local, con autenticación y transporte cifrado obligatorios | ⏳ [ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md) aceptado, falta implementar |
 
 Los objetivos numéricos de memoria, CPU y arranque están en el
 [ADR 0002](docs/adr/0002-stack-tauri-rust-svelte.md).

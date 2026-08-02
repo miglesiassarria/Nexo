@@ -117,8 +117,14 @@ haga explícito.
 8. **Nexo se identifica como Nexo.** No se suplanta el `User-Agent` ni la identidad
    de otro cliente cuando el flujo permita identificarse honestamente.
 
-9. **Solo localhost.** El gateway escucha en `127.0.0.1`. No se expone en red sin
-   autenticación, autorización y transporte seguro.
+9. **Solo localhost por defecto.** El gateway escucha en `127.0.0.1` salvo que
+   el usuario active explícitamente el acceso desde su red local. Esa
+   activación exige a la vez autenticación (el token de aplicación ya
+   obligatorio), autorización (igual, sin cambios) y transporte cifrado
+   (TLS). Ninguna de las tres es opcional, y nunca se degradan en silencio si
+   falla alguna — ver [ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md).
+   Acceso remoto fuera de la red local (Internet, reenvío de puertos, túneles)
+   sigue fuera del proyecto.
 
 10. **El contenido de las conversaciones no se guarda por defecto.**
 
