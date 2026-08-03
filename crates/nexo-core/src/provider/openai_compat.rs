@@ -173,8 +173,18 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 
         let status = resp.status();
         if !status.is_success() {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs);
             let text = resp.text().await.unwrap_or_default();
-            return Err(chat_completions::classify_http_error(status.as_u16(), None, &text));
+            return Err(chat_completions::classify_http_error(
+                status.as_u16(),
+                retry_after,
+                &text,
+            ));
         }
 
         Ok(chat_completions::stream_from_response(resp))
@@ -330,5 +340,56 @@ mod tests {
     #[tokio::test]
     async fn health_without_an_address_is_down_not_a_panic() {
         assert_eq!(adapter().health(&cred(None)).await, crate::provider::Health::Down);
+    }
+
+    /// Reproduce el fallo real reportado con OpenRouter: un modelo `:free` da
+    /// 429 con `Retry-After`, pero este adaptador nunca leía esa cabecera (a
+    /// diferencia de `openai_apikey.rs` y `chatgpt_subscription.rs`, que sí lo
+    /// hacen), así que el cliente se quedaba sin saber cuánto esperar y
+    /// reintentaba a ciegas hasta agotar sus reintentos.
+    #[tokio::test]
+    async fn stream_propagates_the_providers_retry_after_header() {
+        use axum::response::IntoResponse;
+        use axum::routing::post;
+
+        async fn rate_limited() -> impl IntoResponse {
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "17")],
+                "",
+            )
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/chat/completions", post(rate_limited));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let req = crate::provider::ChatRequest {
+            api_model: "x".into(),
+            public_model: "p/x".into(),
+            messages: vec![],
+            tools: vec![],
+            tool_choice: crate::provider::ToolChoice::Auto,
+            reasoning: None,
+            max_output_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            json_mode: false,
+            stream: true,
+        };
+        match adapter()
+            .stream(&req, &cred(Some(&format!("http://{addr}"))))
+            .await
+        {
+            Err(AdapterError::RateLimited { retry_after }) => {
+                assert_eq!(retry_after, Some(std::time::Duration::from_secs(17)))
+            }
+            Err(other) => panic!("esperaba RateLimited con retry_after, llegó {other:?}"),
+            Ok(_) => panic!("un 429 debe rechazar la petición"),
+        }
     }
 }
