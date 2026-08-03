@@ -6,6 +6,7 @@
     kindLabel,
     type App,
     type AppDetail,
+    type Grant,
     type GrantableRoute,
     type IssuedApp,
     type RouteModels,
@@ -129,9 +130,11 @@
       apps = await api.listApps();
       routes = await api.grantableRoutes();
       error = null;
+      const next: Record<string, AppDetail> = {};
       for (const app of apps) {
-        details[app.id] = await api.appDetail(app.id);
+        next[app.id] = await api.appDetail(app.id);
       }
+      details = next;
     } catch (e) {
       error = errorText(e);
     }
@@ -181,6 +184,25 @@
     return details[appId]?.limits.find(
       (l) => l.provider_id === provider && l.credential_kind === kind,
     );
+  }
+
+  /**
+   * Una insignia por vía (proveedor + tipo de credencial), no una por
+   * modelo concedido. `grants` trae una fila por modelo, así que una app con
+   * varios modelos marcados en la misma vía repite `provider_id` +
+   * `credential_kind`: iterar la lista cruda con esa combinación como clave
+   * de `{#each}` colisiona (`each_key_duplicate`), lo que interrumpe esa
+   * pasada de reactividad de Svelte y deja huérfanos otros cambios de estado
+   * pendientes en el mismo ciclo — incluida la actualización de `details`
+   * que decide el aviso de «sin modelos marcados». De ahí que ese aviso
+   * pudiera quedarse mal calculado aunque los datos fueran correctos.
+   */
+  function distinctRoutes(grants: Grant[]): Grant[] {
+    const byRoute = new Map<string, Grant>();
+    for (const g of grants) {
+      byRoute.set(g.provider_id + g.credential_kind, g);
+    }
+    return [...byRoute.values()];
   }
 
   async function updateLimit(
@@ -267,7 +289,7 @@
               <span class="badge ok">Activa</span>
             {/if}
             <code>{app.token_prefix}…</code>
-            {#each details[app.id]?.grants ?? [] as g (g.provider_id + g.credential_kind)}
+            {#each distinctRoutes(details[app.id]?.grants ?? []) as g (g.provider_id + g.credential_kind)}
               <span
                 class="badge"
                 class:sub={g.credential_kind === "subscription_oauth"}
