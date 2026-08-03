@@ -1548,6 +1548,259 @@ async fn a_provider_added_before_models_dev_loads_gets_enriched_once_it_does() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Gemini real (spec 0008). Marcadas `#[ignore]` porque exigen una clave:
+//   NEXO_TEST_GEMINI_API_KEY=... cargo test -p nexo-core --test gateway_e2e -- --ignored gemini
+// ---------------------------------------------------------------------------
+
+const GEMINI_MODEL: &str = "gemini/models/gemini-2.5-flash";
+
+/// Monta un Nexo con Gemini añadido con el atajo de la spec 0008 (mismo
+/// adaptador genérico que Zen y OpenRouter) y una aplicación con acceso.
+/// `None` si no hay clave en el entorno, para que la prueba se salte de
+/// forma explícita.
+async fn start_with_gemini() -> Option<Harness> {
+    let Ok(key) = std::env::var("NEXO_TEST_GEMINI_API_KEY") else {
+        eprintln!("NEXO_TEST_GEMINI_API_KEY no está definida; prueba omitida");
+        return None;
+    };
+
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    // Mismo orden que exigió la spec 0006: cargar `models.dev` antes de
+    // añadir el proveedor, o el catálogo llega sin enriquecer.
+    nexo.refresh_models_dev().await;
+
+    nexo.add_custom_provider(
+        "Gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        &key,
+    )
+    .await
+    .expect("añadir el proveedor no debe fallar con una clave válida");
+
+    let issued = nexo.db().create_app("prueba-gemini", None).expect("app");
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "gemini".into(),
+                credential_kind: "api_key".into(),
+                model_pattern: "*".into(),
+                allow_tools: true,
+                allow_multimodal: false,
+                log_content: false,
+            },
+        )
+        .expect("grant");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Some(Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http: reqwest::Client::new(),
+    })
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_GEMINI_API_KEY"]
+async fn gemini_discovers_its_real_catalog_and_enriches_it_with_models_dev() {
+    // Criterio 3 de la spec 0008. `models.dev` no declara una URL `api` para
+    // `google` (a diferencia de Zen y OpenRouter, ver riesgo D2 del diseño),
+    // así que este test también confirma que el respaldo por id de modelo
+    // basta para traer precio y límites reales, no solo el listado desnudo.
+    let Some(h) = start_with_gemini().await else { return };
+
+    let body: Value = h
+        .http
+        .get(format!("{}/v1/models", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let models = body["data"].as_array().unwrap();
+    assert!(!models.is_empty(), "el catálogo de Gemini no debe llegar vacío");
+
+    let flash = models
+        .iter()
+        .find(|m| m["id"] == GEMINI_MODEL)
+        .expect("el modelo de prueba debe estar en el catálogo real");
+    assert_eq!(flash["nexo"]["credential_kind"], "api_key");
+    assert_eq!(
+        flash["nexo"]["priced"], true,
+        "el respaldo entre proveedores de ModelsDevCatalog::lookup debe encontrar el precio real"
+    );
+    assert!(
+        !flash["nexo"]["context_max"].is_null(),
+        "el límite de contexto debe venir de models.dev, no quedar sin dato"
+    );
+    for m in models {
+        assert!(m["id"].as_str().unwrap().starts_with("gemini/"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_GEMINI_API_KEY"]
+async fn gemini_chat_with_a_real_model_works_end_to_end() {
+    // Criterio 4 de la spec 0008, sin streaming.
+    let Some(h) = start_with_gemini().await else { return };
+
+    let resp = h
+        .post_chat(json!({
+            "model": GEMINI_MODEL,
+            "messages": [{"role": "user", "content": "Responde solo: OK"}],
+            // Gemini 2.5 Flash razona por defecto, y con un presupuesto bajo
+            // puede gastarlo entero en tokens de razonamiento invisibles sin
+            // dejar nada para la respuesta visible (verificado contra la API
+            // real el 2026-08-03: con max_tokens=20, 3 de 4 intentos daban
+            // contenido nulo). 200 lo evita en la práctica.
+            "max_tokens": 200
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert!(!body["choices"][0]["message"]["content"].is_null());
+
+    let row = h
+        .nexo
+        .db()
+        .recent_requests(0, 5)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation == "chat")
+        .expect("la petición queda registrada");
+    assert_eq!(row.status, "ok");
+    assert_eq!(row.credential_kind, "api_key");
+    assert_eq!(row.provider_id, "gemini");
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_GEMINI_API_KEY"]
+async fn gemini_streaming_reassembles_correctly() {
+    // Criterio 4 de la spec 0008, con streaming — y comprueba lo que quedó
+    // pendiente de descubrir en el diseño: si el chunk de Gemini usa
+    // `choices[0].delta.content` y `finish_reason` tal como los documenta
+    // Google, sin ningún nombre de campo distinto que la traducción no
+    // reconozca (como pasó con `reasoning_content` en Zen).
+    let Some(h) = start_with_gemini().await else { return };
+
+    let raw = h
+        .post_chat(json!({
+            "model": GEMINI_MODEL,
+            "messages": [{"role": "user", "content": "Cuenta: 1 2 3"}],
+            "stream": true,
+            // Mismo motivo que en la prueba sin streaming: un presupuesto
+            // bajo puede consumirse entero en razonamiento invisible.
+            "max_tokens": 200
+        }))
+        .await
+        .text()
+        .await
+        .unwrap();
+
+    assert!(raw.trim_end().ends_with("data: [DONE]"));
+    let chunks = parse_sse(&raw);
+
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert!(!text.is_empty(), "debe llegar texto en los deltas del stream");
+
+    let finishes = chunks
+        .iter()
+        .filter(|c| !c["choices"][0]["finish_reason"].is_null())
+        .count();
+    assert_eq!(finishes, 1, "un único cierre de la respuesta");
+}
+
+#[tokio::test]
+#[ignore = "necesita red real (contra la API de Gemini, sin clave válida)"]
+async fn gemini_invalid_key_is_a_clear_auth_error() {
+    // Criterio 5 de la spec 0008: una clave rechazada debe explicarlo, no
+    // devolver un 502 genérico. No necesita una clave real de prueba: usa
+    // una deliberadamente inválida contra el endpoint real de Gemini.
+    //
+    // El rechazo ocurre al descubrir el catálogo (`GET /models`), que es
+    // donde el adaptador usa la credencial de verdad por primera vez.
+    // `add_custom_provider` no propaga ese fallo como `Err` — solo lo
+    // registra (ver `service.rs`) — así que se comprueba directamente en el
+    // resultado de `refresh_catalog_from_providers`, la misma fuente que usa
+    // el arranque real de la app para decidir si avisar.
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+    let provider = nexo
+        .add_custom_provider(
+            "Gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "clave-invalida-de-prueba",
+        )
+        .await
+        .expect("añadir el proveedor no falla aunque la clave sea inválida");
+
+    let results = nexo.refresh_catalog_from_providers().await;
+    let result = results
+        .iter()
+        .find(|r| r.provider_id == provider.id)
+        .expect("el proveedor recién añadido debe aparecer en el refresco");
+
+    let error = result
+        .error
+        .as_deref()
+        .expect("una clave inválida debe dejar un error explicado, no un catálogo vacío en silencio");
+    // `AdapterError::Auth` se muestra como «autenticación: {motivo real del
+    // proveedor}» (ver `provider/mod.rs`) — el motivo real de Gemini es
+    // literalmente "Please pass a valid API key".
+    assert!(
+        error.contains("autenticación") || error.to_lowercase().contains("api key"),
+        "el error debe explicar que la credencial fue rechazada, no un 502 genérico: {error}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "necesita NEXO_TEST_GEMINI_API_KEY"]
+async fn gemini_unknown_model_is_rejected_with_a_pointer_to_the_catalog() {
+    // Criterio 5 de la spec 0008: un modelo que no existe en el catálogo
+    // real debe rechazarse señalando el catálogo, no como un 502 genérico.
+    let Some(h) = start_with_gemini().await else { return };
+
+    let resp = h
+        .post_chat(json!({
+            "model": "gemini/modelo-que-no-existe-9999",
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+
+    assert_eq!(resp.status().as_u16(), 422);
+    let body: Value = resp.json().await.unwrap();
+    // El mensaje de nivel superior es solo «capacidad no soportada: model»
+    // (el `Display` genérico de `AdapterError::Unsupported`); el detalle que
+    // señala el catálogo vive en `error.nexo.hint` — mismo patrón que ya
+    // comprueba `zen_model_error_is_unsupported_not_a_generic_502`.
+    let hint = body["error"]["nexo"]["hint"].as_str().unwrap_or("");
+    assert!(
+        hint.contains("catálogo") || hint.contains("catalogo"),
+        "debe señalar el catálogo, no un 502 genérico: {hint}"
+    );
+}
+
 // -- Spec 0007: acceso desde la red local -----------------------------------
 
 /// Demuestra el criterio de aceptación 1 de la spec 0007 de punta a punta:

@@ -2919,6 +2919,31 @@ mod tests {
     }
 
     #[test]
+    fn the_gemini_shortcut_arrives_with_its_name_and_address_filled() {
+        let options = nexo().connect_options().unwrap();
+        let gemini = options
+            .iter()
+            .find(|o| o.name == "Gemini")
+            .expect("el atajo de Gemini debe ofrecerse");
+
+        match &gemini.form {
+            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+                assert_eq!(suggested_name, "Gemini");
+                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta/openai");
+            }
+            other => panic!("Gemini no es un endpoint compatible: {other:?}"),
+        }
+        assert!(gemini.docs_url.is_some());
+
+        // Convive con Zen y OpenRouter: mismo mecanismo, atajos distintos y
+        // sin ids repetidos (ya lo comprueba
+        // connect_options_cover_the_four_form_shapes, pero se repite aquí de
+        // forma explícita para este trío).
+        assert!(options.iter().any(|o| o.name == "OpenCode Zen"));
+        assert!(options.iter().any(|o| o.name == "OpenRouter"));
+    }
+
+    #[test]
     fn the_generic_compatible_option_leaves_every_field_empty() {
         let options = nexo().connect_options().unwrap();
         let generic = options
