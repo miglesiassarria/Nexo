@@ -328,35 +328,65 @@ fn classify_by_status(
 /// al status HTTP. `status` solo se usa para el caso desconocido, de forma que el
 /// error final lleve el código real y no uno inventado.
 fn parse_error_envelope(body: &str, status: u16) -> Option<AdapterError> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    // Gemini envuelve algunos errores en un array de un solo elemento
+    // (verificado contra la API real el 2026-08-03, con un modelo
+    // inexistente), a diferencia del sobre plano que comparten OpenAI y Zen.
+    let value = match parsed.as_array().and_then(|a| a.first()) {
+        Some(first) => first,
+        None => &parsed,
+    };
     let error = value.get("error")?;
-    let kind = error.get("type").and_then(|v| v.as_str())?;
-    let message = error
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or(kind)
-        .to_string();
+    let message = error.get("message").and_then(|v| v.as_str());
 
-    Some(match kind {
-        // Zen: sin saldo en el workspace. No es un problema de la clave, y
-        // reautenticar no lo arregla: hay que añadir saldo, no reconectar.
-        "CreditsError" => AdapterError::Auth {
-            reason: format!("saldo insuficiente en el proveedor: {message}"),
-            reauth_required: false,
-        },
-        // Zen: el modelo pedido no existe o no está disponible para esta clave.
-        "ModelError" => AdapterError::Unsupported {
-            capability: "model".into(),
-            hint: Some(message),
-        },
-        "AuthError" => AdapterError::Auth { reason: message, reauth_required: true },
-        "RateLimitError" | "rate_limit_exceeded" => AdapterError::RateLimited { retry_after: None },
-        _ => AdapterError::Upstream {
-            status,
-            provider_code: Some(kind.to_string()),
-            message,
-        },
-    })
+    if let Some(kind) = error.get("type").and_then(|v| v.as_str()) {
+        let message = message.unwrap_or(kind).to_string();
+        return Some(match kind {
+            // Zen: sin saldo en el workspace. No es un problema de la clave, y
+            // reautenticar no lo arregla: hay que añadir saldo, no reconectar.
+            "CreditsError" => AdapterError::Auth {
+                reason: format!("saldo insuficiente en el proveedor: {message}"),
+                reauth_required: false,
+            },
+            // Zen: el modelo pedido no existe o no está disponible para esta clave.
+            "ModelError" => AdapterError::Unsupported {
+                capability: "model".into(),
+                hint: Some(message),
+            },
+            "AuthError" => AdapterError::Auth { reason: message, reauth_required: true },
+            "RateLimitError" | "rate_limit_exceeded" => {
+                AdapterError::RateLimited { retry_after: None }
+            }
+            _ => AdapterError::Upstream {
+                status,
+                provider_code: Some(kind.to_string()),
+                message,
+            },
+        });
+    }
+
+    // Sobre `google.rpc.Status` de Gemini: `{"error":{"code","message","status"}}`,
+    // sin campo `type`. Verificado contra la API real el 2026-08-03: una
+    // clave inválida da HTTP 400 (no 401/403) con `status: "INVALID_ARGUMENT"`
+    // — sin este caso, caía al genérico y el cliente veía un 502 en vez de un
+    // error de credencial. `INVALID_ARGUMENT` y `NOT_FOUND` son demasiado
+    // genéricos para clasificarlos solo por el código: se exige además que el
+    // mensaje real hable de la clave o del modelo, o se cae al status HTTP.
+    let google_status = error.get("status").and_then(|v| v.as_str())?;
+    let message = message.unwrap_or(google_status).to_string();
+    let lower = message.to_ascii_lowercase();
+    match google_status {
+        "UNAUTHENTICATED" | "PERMISSION_DENIED" => {
+            Some(AdapterError::Auth { reason: message, reauth_required: true })
+        }
+        "INVALID_ARGUMENT" if lower.contains("api key") => {
+            Some(AdapterError::Auth { reason: message, reauth_required: true })
+        }
+        "NOT_FOUND" if lower.contains("model") => {
+            Some(AdapterError::Unsupported { capability: "model".into(), hint: Some(message) })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -679,5 +709,54 @@ mod tests {
         // no fallar al parsear.
         let body = r#"{"error":{"message":"algo","type":"invalid_request_error"}}"#;
         assert_eq!(classify_http_error(400, None, body).kind_str(), "upstream");
+    }
+
+    /// Cuerpo real capturado de Gemini el 2026-08-03 para una clave inválida:
+    /// HTTP 400 (no 401/403), sobre `google.rpc.Status` (`status`, no `type`).
+    /// Sin reconocer esta forma, caía al genérico y el cliente veía un 502 en
+    /// vez de un error de credencial — justo lo que el criterio 5 de la spec
+    /// 0008 prohíbe.
+    #[test]
+    fn gemini_invalid_api_key_is_recognised_despite_the_400_status() {
+        let body = r#"{"error":{"code":400,"message":"Please pass a valid API key","status":"INVALID_ARGUMENT"}}"#;
+        match classify_http_error(400, None, body) {
+            AdapterError::Auth { reason, reauth_required } => {
+                assert!(reason.contains("API key"), "debe conservar el motivo real: {reason}");
+                assert!(reauth_required);
+            }
+            other => panic!("esperaba Auth, llegó {other:?}"),
+        }
+    }
+
+    /// Gemini envuelve algunos errores (verificado con un modelo inexistente,
+    /// 2026-08-03) en un array de un elemento, a diferencia del sobre plano
+    /// que comparten OpenAI y Zen.
+    #[test]
+    fn gemini_wraps_some_errors_in_a_single_element_array() {
+        let body = r#"[{"error":{"code":404,"message":"models/no-existe is not found for API version v1main, or is not supported for generateContent.","status":"NOT_FOUND"}}]"#;
+        match classify_http_error(404, None, body) {
+            AdapterError::Unsupported { hint, .. } => {
+                assert!(hint.as_deref().unwrap_or("").contains("no-existe"))
+            }
+            other => panic!("esperaba Unsupported, llegó {other:?}"),
+        }
+    }
+
+    /// Un `INVALID_ARGUMENT` que no habla de la clave (cuerpo malformado,
+    /// parámetro fuera de rango…) no debe clasificarse como error de
+    /// credencial solo por compartir el mismo código.
+    #[test]
+    fn an_invalid_argument_unrelated_to_the_api_key_stays_upstream() {
+        let body = r#"{"error":{"code":400,"message":"max_tokens debe ser un entero positivo","status":"INVALID_ARGUMENT"}}"#;
+        assert_eq!(classify_http_error(400, None, body).kind_str(), "upstream");
+    }
+
+    /// `NOT_FOUND` sin relación con el modelo (por ejemplo, un recurso interno
+    /// que no existe) tampoco debe pasar por «modelo no soportado» solo por
+    /// coincidir el código de estado.
+    #[test]
+    fn a_not_found_unrelated_to_the_model_stays_upstream() {
+        let body = r#"{"error":{"code":404,"message":"El recurso solicitado no existe","status":"NOT_FOUND"}}"#;
+        assert_eq!(classify_http_error(404, None, body).kind_str(), "upstream");
     }
 }

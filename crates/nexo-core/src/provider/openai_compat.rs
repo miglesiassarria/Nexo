@@ -47,9 +47,21 @@ pub const OPENROUTER: ProviderPreset = ProviderPreset {
     docs_url: "https://openrouter.ai/models",
 };
 
+/// Verificado contra `https://ai.google.dev/gemini-api/docs/openai` el
+/// 2026-08-03: la capa de compatibilidad con OpenAI vive en esta base, con
+/// `Bearer`, `GET /models` y streaming SSE estándar. `models.dev` no declara
+/// una URL `api` para `google` (a diferencia de `opencode` y `openrouter`),
+/// así que el enriquecimiento del catálogo cae al respaldo de
+/// `ModelsDevCatalog::lookup` por id de modelo — ver spec 0008, riesgo D2.
+pub const GEMINI: ProviderPreset = ProviderPreset {
+    suggested_name: "Gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    docs_url: "https://ai.google.dev/gemini-api/docs",
+};
+
 /// Preajustes que ofrece la interfaz, en el orden en que se muestran.
 pub fn presets() -> &'static [ProviderPreset] {
-    &[OPENCODE_ZEN, OPENROUTER]
+    &[OPENCODE_ZEN, OPENROUTER, GEMINI]
 }
 
 pub struct OpenAiCompatAdapter {

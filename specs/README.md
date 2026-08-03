@@ -14,6 +14,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 
 | [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `build` | El mecanismo de presets ya existía para esto; verificado contra `models.dev` real antes de fijar la URL |
 | [0007](0007-acceso-red-local/spec.md) | Acceso desde la red local | `hecho` | Requiere [ADR 0003](../docs/adr/0003-acceso-desde-la-red-local.md); verificado por test y contra el binario real instalado; falta el clic real en el interruptor (bloqueado por el mismo permiso de Accesibilidad de siempre) |
+| [0008](0008-atajo-de-proveedor-gemini-api-key/spec.md) | Atajo de proveedor: Gemini (API key) | `hecho` | Verificado con clave real. Dos arreglos reales encontrados al construir: id de modelo con prefijo `models/` no reconocido por `models.dev`, y el sobre de error de Gemini (`google.rpc.Status`, a veces en array) no lo reconocía el clasificador compartido |
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

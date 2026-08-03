@@ -61,6 +61,17 @@ impl ModelsDevCatalog {
     /// mejor un dato probable que ninguno, y el precio que produce siempre queda
     /// marcado como estimado, nunca como reportado por el proveedor real.
     pub fn lookup(&self, provider_hint: Option<&str>, model_id: &str) -> Option<&ModelsDevEntry> {
+        if let Some(entry) = self.lookup_by_id(provider_hint, model_id) {
+            return Some(entry);
+        }
+        // La API compatible de Gemini antepone un espacio de nombres al id
+        // (`models/gemini-2.5-flash`, verificado el 2026-08-03) que
+        // `models.dev` no usa. Se reintenta sin él antes de rendirse.
+        let stripped = model_id.strip_prefix("models/")?;
+        self.lookup_by_id(provider_hint, stripped)
+    }
+
+    fn lookup_by_id(&self, provider_hint: Option<&str>, model_id: &str) -> Option<&ModelsDevEntry> {
         if let Some(hint) = provider_hint {
             if let Some(entry) = self.by_provider.get(hint).and_then(|m| m.get(model_id)) {
                 return Some(entry);
@@ -304,6 +315,21 @@ mod tests {
     fn provider_id_for_api_is_none_for_an_unknown_url() {
         let catalog = ModelsDevCatalog::parse(&real_sample());
         assert!(catalog.provider_id_for_api("https://runpod.example/v1").is_none());
+    }
+
+    /// La API compatible de Gemini devuelve sus modelos con el espacio de
+    /// nombres delante (`models/gemini-2.5-flash`, verificado contra la API
+    /// real el 2026-08-03), pero `models.dev` los guarda sin él. Sin este
+    /// arreglo, ni siquiera el respaldo entre proveedores encontraba el
+    /// modelo — spec 0008.
+    #[test]
+    fn a_models_slash_prefixed_id_is_matched_after_stripping_it() {
+        let catalog = ModelsDevCatalog::parse(&real_sample());
+        assert!(catalog.lookup(Some("opencode"), "claude-haiku-4-5").is_some());
+        assert!(
+            catalog.lookup(Some("gemini"), "models/claude-haiku-4-5").is_some(),
+            "debe reintentar sin el prefijo `models/` antes de rendirse"
+        );
     }
 
     #[test]
