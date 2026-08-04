@@ -10,6 +10,8 @@
     type GrantableRoute,
     type IssuedApp,
     type RouteModels,
+    type ModelGrant,
+    NEXO_REASONING_LEVELS,
   } from "../api";
 
   let { onchange }: { onchange: () => void } = $props();
@@ -75,7 +77,7 @@
    * Guarda el conjunto entero de modelos de una vía. Un conjunto vacío retira la
    * vía: no existe «concedida sin modelos».
    */
-  async function saveModels(app: App, route: GrantableRoute, models: string[]) {
+  async function saveModels(app: App, route: GrantableRoute, models: ModelGrant[]) {
     saving = true;
     error = null;
     const grant = grantFor(app.id, route.provider_id, route.credential_kind);
@@ -101,28 +103,62 @@
     }
   }
 
-  function selectedNames(key: string): string[] {
-    return (routeModels[key]?.models ?? []).filter((m) => m.selected).map((m) => m.public_name);
+  /**
+   * La selección actual de una vía **con el nivel de cada modelo**.
+   *
+   * Se reenvía completa en cada cambio porque el núcleo borra y reinserta las
+   * filas del permiso: mandar solo los nombres dejaría a nulo el nivel de todos
+   * los modelos sin que nadie lo hubiera pedido.
+   */
+  function selectedGrants(key: string): ModelGrant[] {
+    return (routeModels[key]?.models ?? [])
+      .filter((m) => m.selected)
+      .map((m) => ({ public_name: m.public_name, reasoning_effort: m.configured_effort }));
   }
 
   function toggleModel(app: App, route: GrantableRoute, name: string, on: boolean) {
     const key = routeKey(route.provider_id, route.credential_kind);
-    const current = new Set(selectedNames(key));
-    if (on) current.add(name);
+    const current = new Map(selectedGrants(key).map((g) => [g.public_name, g]));
+    if (on) current.set(name, { public_name: name, reasoning_effort: null });
     else current.delete(name);
-    saveModels(app, route, [...current]);
+    saveModels(app, route, [...current.values()]);
   }
 
   /** Marca o desmarca lo que el filtro deja a la vista, no todo el catálogo. */
   function toggleVisible(app: App, route: GrantableRoute, on: boolean) {
     const key = routeKey(route.provider_id, route.credential_kind);
     const shown = visible(routeModels[key]?.models ?? []).map((m) => m.public_name);
-    const current = new Set(selectedNames(key));
+    const current = new Map(selectedGrants(key).map((g) => [g.public_name, g]));
     for (const name of shown) {
-      if (on) current.add(name);
+      if (on) current.set(name, current.get(name) ?? { public_name: name, reasoning_effort: null });
       else current.delete(name);
     }
-    saveModels(app, route, [...current]);
+    saveModels(app, route, [...current.values()]);
+  }
+
+  /**
+   * Cambia el nivel de esfuerzo de un modelo. Cadena vacía = sin especificar.
+   *
+   * Es un valor por defecto: solo se aplica cuando la aplicación cliente no
+   * manda su propio `reasoning_effort`. Nunca sobrescribe lo que pida.
+   */
+  function setEffort(app: App, route: GrantableRoute, name: string, effort: string) {
+    const key = routeKey(route.provider_id, route.credential_kind);
+    const current = new Map(selectedGrants(key).map((g) => [g.public_name, g]));
+    current.set(name, { public_name: name, reasoning_effort: effort === "" ? null : effort });
+    saveModels(app, route, [...current.values()]);
+  }
+
+  /** Los niveles del modelo que esta versión de Nexo sabe enviar. */
+  function usableLevels(model: RouteModels["models"][number]): string[] {
+    return model.caps.reasoning_levels.filter((l) => NEXO_REASONING_LEVELS.includes(l));
+  }
+
+  /** Un nivel configurado que el modelo ya no declara: se conserva, no se manda. */
+  function effortIsStale(model: RouteModels["models"][number]): boolean {
+    return (
+      !!model.configured_effort && !model.caps.reasoning_levels.includes(model.configured_effort)
+    );
   }
 
   async function load() {
@@ -220,7 +256,9 @@
         providerId: route.provider_id,
         credentialKind: route.credential_kind,
         // El límite se cambia sin tocar la selección: se reenvía la que hay.
-        models: routeModels[key]?.inherited_all ? ["*"] : selectedNames(key),
+        models: routeModels[key]?.inherited_all
+          ? [{ public_name: "*", reasoning_effort: null }]
+          : selectedGrants(key),
         allowTools: grant?.allow_tools ?? true,
         allowMultimodal: grant?.allow_multimodal ?? true,
         maxRequests,
@@ -419,6 +457,40 @@
                         {:else if model.priced}
                           <span class="badge key">por token</span>
                         {/if}
+
+                        {#if model.selected && model.caps.reasoning && model.caps.reasoning_levels.length > 0}
+                          <span class="effort">
+                            <span class="effort-label">esfuerzo</span>
+                            <select
+                              value={model.configured_effort ?? ""}
+                              disabled={saving}
+                              title="Solo se aplica si la aplicación no manda su propio nivel"
+                              onchange={(e) =>
+                                setEffort(app, route, model.public_name, e.currentTarget.value)}
+                            >
+                              <option value="">sin especificar</option>
+                              {#each usableLevels(model) as level (level)}
+                                <option value={level}>{level}</option>
+                              {/each}
+                            </select>
+                            {#if effortIsStale(model)}
+                              <span
+                                class="badge warn"
+                                title="Configurado, pero el modelo ya no lo admite. Se conserva y no se envía."
+                              >
+                                «{model.configured_effort}» ya no está admitido
+                              </span>
+                            {/if}
+                            {#each model.caps.reasoning_levels.filter((l) => !NEXO_REASONING_LEVELS.includes(l)) as unknown (unknown)}
+                              <span
+                                class="badge"
+                                title="El proveedor lo admite, pero esta versión de Nexo todavía no sabe enviarlo"
+                              >
+                                {unknown}: aún no soportado
+                              </span>
+                            {/each}
+                          </span>
+                        {/if}
                       {/if}
                     </label>
                   {/each}
@@ -555,6 +627,23 @@
 
   .model code {
     font-size: 0.78rem;
+  }
+
+  .effort {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: 0.2rem;
+  }
+
+  .effort-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+
+  .effort select {
+    font-size: 0.72rem;
+    padding: 0.1rem 0.25rem;
   }
 
   .check {

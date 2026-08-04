@@ -237,17 +237,39 @@ fn model_matches(pattern: &str, model: &str) -> bool {
 /// anunciaba modelos que el gateway después rechazaba, que es la peor forma de
 /// fallar: el cliente descubre que no puede cuando ya está enviando la petición.
 /// Cualquier camino que decida sobre modelos permitidos pasa por aquí.
+/// Cuando varios patrones coinciden gana **el más específico**, no el primero
+/// que devuelva la base de datos. Importa porque `grants()` consulta sin
+/// `ORDER BY` y el orden de SQLite no está garantizado: con un `*` heredado y un
+/// modelo marcado a la vez, la fila elegida era arbitraria. Mientras todas las
+/// filas de una vía llevaban valores iguales eso no se notaba; desde que una
+/// lleva un valor propio por modelo (el esfuerzo de razonamiento, spec 0009)
+/// decidía de dónde salía ese valor.
 pub fn grant_for<'a>(
     grants: &'a [Grant],
     provider_id: &str,
     credential_kind: &str,
     public_model: &str,
 ) -> Option<&'a Grant> {
-    grants.iter().find(|g| {
-        g.provider_id == provider_id
-            && g.credential_kind == credential_kind
-            && model_matches(&g.model_pattern, public_model)
-    })
+    grants
+        .iter()
+        .filter(|g| {
+            g.provider_id == provider_id
+                && g.credential_kind == credential_kind
+                && model_matches(&g.model_pattern, public_model)
+        })
+        .max_by_key(|g| specificity(&g.model_pattern))
+}
+
+/// Cuánto de concreto es un patrón: exacto gana a prefijo, y un prefijo más
+/// largo gana a uno más corto. `*` es el más general de todos.
+fn specificity(pattern: &str) -> (u8, usize) {
+    if pattern == "*" {
+        return (0, 0);
+    }
+    match pattern.strip_suffix('*') {
+        Some(prefix) => (1, prefix.len()),
+        None => (2, pattern.len()),
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +311,7 @@ mod tests {
                 allow_tools: false,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .unwrap();
@@ -348,6 +371,7 @@ mod tests {
                 allow_tools: true,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
             Grant {
                 provider_id: "openai".into(),
@@ -356,6 +380,7 @@ mod tests {
                 allow_tools: false,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         ];
 
@@ -371,6 +396,68 @@ mod tests {
 
         // Y el eje de credencial se respeta: la misma pareja por otra vía es otra cosa.
         assert!(grant_for(&grants, "openai", "subscription_oauth", "openai/x").is_none());
+    }
+
+    /// Con varios patrones que coinciden en la MISMA vía, gana el más
+    /// específico. El test anterior no cubría este caso porque usa proveedores
+    /// distintos, así que la ambigüedad pasó desapercibida: `grants()` consulta
+    /// sin `ORDER BY` y la implementación anterior (`.find()`) se quedaba con la
+    /// primera fila que devolviera SQLite. Aquí el `*` va deliberadamente
+    /// PRIMERO en el vector: con `.find()` esta prueba falla.
+    #[test]
+    fn grant_for_prefers_the_most_specific_pattern_in_the_same_route() {
+        let grants = vec![
+            Grant {
+                provider_id: "openai".into(),
+                credential_kind: "subscription_oauth".into(),
+                model_pattern: "*".into(),
+                allow_tools: false,
+                allow_multimodal: false,
+                log_content: false,
+                reasoning_effort: None,
+            },
+            Grant {
+                provider_id: "openai".into(),
+                credential_kind: "subscription_oauth".into(),
+                model_pattern: "openai/gpt-5.6-sol".into(),
+                allow_tools: true,
+                allow_multimodal: false,
+                log_content: false,
+                reasoning_effort: None,
+            },
+            Grant {
+                provider_id: "openai".into(),
+                credential_kind: "subscription_oauth".into(),
+                model_pattern: "openai/gpt-5.6*".into(),
+                allow_tools: false,
+                allow_multimodal: true,
+                log_content: false,
+                reasoning_effort: None,
+            },
+        ];
+
+        // Exacto gana a prefijo y a comodín.
+        let exact = grant_for(&grants, "openai", "subscription_oauth", "openai/gpt-5.6-sol")
+            .expect("hay permiso");
+        assert_eq!(exact.model_pattern, "openai/gpt-5.6-sol");
+
+        // Sin fila exacta, el prefijo gana al comodín.
+        let prefix = grant_for(&grants, "openai", "subscription_oauth", "openai/gpt-5.6-mini")
+            .expect("hay permiso");
+        assert_eq!(prefix.model_pattern, "openai/gpt-5.6*");
+
+        // Y el comodín sigue cubriendo lo que no encaja en nada más concreto.
+        let wildcard = grant_for(&grants, "openai", "subscription_oauth", "openai/otro")
+            .expect("hay permiso");
+        assert_eq!(wildcard.model_pattern, "*");
+    }
+
+    #[test]
+    fn specificity_orders_exact_above_prefix_above_wildcard() {
+        assert!(specificity("openai/gpt-5") > specificity("openai/gpt*"));
+        assert!(specificity("openai/gpt*") > specificity("*"));
+        // Un prefijo más largo es más concreto que uno más corto.
+        assert!(specificity("openai/gpt-5*") > specificity("openai/g*"));
     }
 
     #[test]

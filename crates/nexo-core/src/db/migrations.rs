@@ -5,7 +5,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: i64 = 2;
+pub const CURRENT_VERSION: i64 = 3;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -24,6 +24,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
         conn.execute_batch(V2)?;
         conn.pragma_update(None, "user_version", 2)?;
         tracing::info!("esquema migrado a la versión 2");
+    }
+
+    if version < 3 {
+        conn.execute_batch(V3)?;
+        conn.pragma_update(None, "user_version", 3)?;
+        tracing::info!("esquema migrado a la versión 3");
     }
 
     Ok(())
@@ -207,6 +213,20 @@ CREATE TABLE custom_providers (
 );
 "#;
 
+const V3: &str = r#"
+-- Nivel de esfuerzo de razonamiento por permiso (spec 0009).
+--
+-- Es el PRIMER valor de esta tabla que es del modelo y no de la vía: el resto
+-- de columnas se escriben iguales en todas las filas de un proveedor+vía, y
+-- esta no. `grant_for` elige la fila más específica, así que el nivel que se
+-- aplica es el de la fila que autoriza la petición.
+--
+-- Nulo significa «sin especificar»: Nexo no manda nada y decide el proveedor,
+-- que es exactamente el comportamiento anterior a esta columna. Por eso no
+-- lleva DEFAULT: una base de datos migrada queda igual que estaba.
+ALTER TABLE app_grants ADD COLUMN reasoning_effort TEXT;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +255,55 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(v, CURRENT_VERSION);
+    }
+
+    /// Criterio 3 de la spec 0009: una base de datos creada ANTES de esta
+    /// especificación se abre sin error y sus permisos siguen ahí, sin nivel.
+    /// Se construye a propósito el esquema en la versión 2 (V1 + V2, sin V3) y
+    /// se inserta un permiso como lo haría la versión anterior de Nexo.
+    #[test]
+    fn migration_v3_adds_the_effort_column_and_keeps_grants() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch(V2).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+
+        conn.execute(
+            "INSERT INTO apps (id, name, token_hash, token_prefix, created_at)
+             VALUES ('a1', 'vieja', 'h', 'nx_', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO app_grants
+               (app_id, provider_id, credential_kind, model_pattern, allow_tools)
+             VALUES ('a1', 'openai', 'subscription_oauth', 'openai/gpt-5.6-sol', 1)",
+            [],
+        )
+        .unwrap();
+
+        // La migración de verdad, sobre datos que ya existían.
+        apply(&conn).unwrap();
+
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+
+        let (pattern, allow_tools, effort): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT model_pattern, allow_tools, reasoning_effort
+                 FROM app_grants WHERE app_id = 'a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("el permiso que ya existía debe seguir ahí");
+        assert_eq!(pattern, "openai/gpt-5.6-sol");
+        assert_eq!(allow_tools, 1, "migrar no puede alterar lo que ya estaba");
+        assert_eq!(
+            effort, None,
+            "sin especificar: idéntico al comportamiento anterior a la columna"
+        );
     }
 
     #[test]

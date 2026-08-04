@@ -193,6 +193,21 @@ impl ReasoningEffort {
             Self::XHigh => "xhigh",
         }
     }
+
+    /// El inverso de `as_str`. Devuelve `None` para un nivel que Nexo no sabe
+    /// enviar: el catálogo puede publicar niveles nuevos antes de que este enum
+    /// los conozca, y ofrecerlos sin poder representarlos sería prometer algo
+    /// que no se cumple (ver D5 del diseño de la especificación 0009).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
 }
 
 /// Capacidades que una petición puede exigir. Se usa para rechazar de forma
@@ -430,6 +445,17 @@ pub struct Capabilities {
     pub json_mode: bool,
     pub streaming: bool,
     pub embeddings: bool,
+    /// Niveles de esfuerzo que el modelo declara admitir, tal como los nombra el
+    /// proveedor (invariante 6: se conserva el dato original). Vacío significa
+    /// «no se sabe», no «ninguno»: la mayoría de vías no publican esta lista.
+    ///
+    /// `serde(default)` no es decorativo: las filas de catálogo ya guardadas en
+    /// disco no tienen este campo, y sin él `serde` fallaría al deserializarlas.
+    /// Como `catalog_rows` hace `unwrap_or_default()` al parsear, ese fallo no
+    /// se vería como error sino como un modelo **sin ninguna capacidad**, que es
+    /// la peor forma de romperse: en silencio y pareciendo un dato legítimo.
+    #[serde(default)]
+    pub reasoning_levels: Vec<String>,
 }
 
 impl Capabilities {
@@ -746,6 +772,45 @@ mod tests {
     fn subscription_requires_app_limit() {
         assert!(CredentialKind::SubscriptionOauth.requires_app_limit());
         assert!(!CredentialKind::ApiKey.requires_app_limit());
+    }
+
+    /// Las filas de catálogo ya guardadas en disco no tienen
+    /// `reasoning_levels`. Sin `#[serde(default)]` este parseo fallaría, y como
+    /// `catalog_rows` hace `unwrap_or_default()`, el modelo aparecería **sin
+    /// ninguna capacidad** en lugar de dar un error: se perderían `text`,
+    /// `tools`, `streaming`… en silencio. Esta prueba es la que impide ese
+    /// estropicio en cualquier campo que se añada aquí en el futuro.
+    #[test]
+    fn capabilities_without_reasoning_levels_still_deserialise() {
+        let stored = r#"{"text":true,"vision":false,"audio":false,"tools":true,
+                         "reasoning":true,"json_mode":true,"streaming":true,
+                         "embeddings":false}"#;
+        let caps: Capabilities =
+            serde_json::from_str(stored).expect("una fila vieja debe seguir deserializando");
+        assert!(caps.text, "no se puede perder una capacidad al añadir un campo");
+        assert!(caps.tools);
+        assert!(caps.streaming);
+        assert!(caps.reasoning);
+        assert!(
+            caps.reasoning_levels.is_empty(),
+            "sin dato es lista vacía, no un nivel inventado"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_parse_is_the_inverse_of_as_str() {
+        for effort in [
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+        ] {
+            assert_eq!(ReasoningEffort::parse(effort.as_str()), Some(effort));
+        }
+        // Un nivel que Nexo no conoce no se inventa: no es elegible (D5).
+        assert_eq!(ReasoningEffort::parse("ultra"), None);
+        assert_eq!(ReasoningEffort::parse(""), None);
     }
 
     #[test]

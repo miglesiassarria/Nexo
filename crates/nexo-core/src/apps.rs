@@ -33,6 +33,37 @@ pub struct Grant {
     pub allow_tools: bool,
     pub allow_multimodal: bool,
     pub log_content: bool,
+    /// Nivel de esfuerzo de razonamiento para este permiso, tal como lo nombra
+    /// el proveedor. `None` es «sin especificar»: Nexo no manda nada.
+    ///
+    /// **Es el único campo de esta estructura que es del modelo y no de la
+    /// vía** (spec 0009): los demás se escriben iguales en todas las filas de
+    /// un proveedor+vía, este no.
+    ///
+    /// Nunca sobrescribe lo que pida el cliente: es un valor por defecto que
+    /// solo se aplica cuando la petición no trae `reasoning_effort`. Ver la
+    /// invariante 2 y `service::prepare_inner`.
+    pub reasoning_effort: Option<String>,
+}
+
+/// Un modelo marcado para una vía, con su nivel de esfuerzo si tiene uno.
+///
+/// Existe porque la selección de modelos dejó de ser una lista de nombres: cada
+/// entrada lleva ahora un valor propio (spec 0009). Mandarlo junto al nombre, y
+/// no en un mapa aparte, evita que las dos estructuras puedan discrepar.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ModelGrant {
+    pub public_name: String,
+    /// `None` o cadena vacía: sin especificar.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+impl ModelGrant {
+    /// Atajo para los sitios que solo marcan el modelo, sin nivel.
+    pub fn plain(public_name: impl Into<String>) -> Self {
+        Self { public_name: public_name.into(), reasoning_effort: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,10 +209,11 @@ impl Db {
         conn.execute(
             "INSERT INTO app_grants
                (app_id, provider_id, credential_kind, model_pattern,
-                allow_tools, allow_multimodal, log_content)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
+                allow_tools, allow_multimodal, log_content, reasoning_effort)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(app_id, provider_id, credential_kind, model_pattern)
-             DO UPDATE SET allow_tools = ?5, allow_multimodal = ?6, log_content = ?7",
+             DO UPDATE SET allow_tools = ?5, allow_multimodal = ?6,
+                           log_content = ?7, reasoning_effort = ?8",
             params![
                 app_id,
                 grant.provider_id,
@@ -190,6 +222,7 @@ impl Db {
                 grant.allow_tools as i64,
                 grant.allow_multimodal as i64,
                 grant.log_content as i64,
+                grant.reasoning_effort,
             ],
         )?;
         Ok(())
@@ -216,7 +249,7 @@ impl Db {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT provider_id, credential_kind, model_pattern,
-                    allow_tools, allow_multimodal, log_content
+                    allow_tools, allow_multimodal, log_content, reasoning_effort
              FROM app_grants WHERE app_id = ?1",
         )?;
         let rows = stmt.query_map(params![app_id], |r| {
@@ -227,6 +260,7 @@ impl Db {
                 allow_tools: r.get::<_, i64>(3)? != 0,
                 allow_multimodal: r.get::<_, i64>(4)? != 0,
                 log_content: r.get::<_, i64>(5)? != 0,
+                reasoning_effort: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -300,6 +334,10 @@ impl Db {
                 allow_tools,
                 allow_multimodal,
                 log_content: false,
+                // Un permiso con comodín cubre toda la vía en una sola fila, así
+                // que no hay dónde colgar un nivel por modelo: se concede sin
+                // especificar y el usuario puede fijarlo luego para la vía.
+                reasoning_effort: None,
             },
         )?;
 
@@ -334,17 +372,27 @@ impl Db {
     /// Un conjunto vacío retira la vía: no existe «concedida sin modelos», porque
     /// sería un estado que no sirve nada y no se distingue de no estar concedida.
     ///
-    /// Las capacidades son de la vía, no del modelo, así que se escriben iguales en
-    /// todas sus filas. El límite obligatorio de suscripción se fija aquí por el
-    /// mismo motivo que en `grant_with_mandatory_limit`: no hay forma de conceder lo
-    /// uno sin lo otro (ADR 0001).
+    /// Las capacidades (`allow_tools`, `allow_multimodal`) son de la vía, no del
+    /// modelo, así que se escriben iguales en todas sus filas. **El nivel de
+    /// esfuerzo de razonamiento no**: es por modelo, y cada fila lleva el suyo
+    /// (spec 0009). Antes de esa especificación todas las columnas de esta tabla
+    /// eran de la vía, y el comentario que había aquí lo daba por sentado.
+    ///
+    /// El llamante manda la selección completa de la vía en cada cambio, con el
+    /// nivel de cada modelo, porque esta función borra y reinserta: un mapa
+    /// parcial dejaría los niveles de los modelos ausentes a nulo sin que nadie
+    /// lo pidiera.
+    ///
+    /// El límite obligatorio de suscripción se fija aquí por el mismo motivo que
+    /// en `grant_with_mandatory_limit`: no hay forma de conceder lo uno sin lo
+    /// otro (ADR 0001).
     #[allow(clippy::too_many_arguments)]
     pub fn replace_app_models(
         &self,
         app_id: &str,
         provider_id: &str,
         kind: CredentialKind,
-        models: &[String],
+        models: &[ModelGrant],
         allow_tools: bool,
         allow_multimodal: bool,
         max_requests: Option<i64>,
@@ -358,16 +406,16 @@ impl Db {
                  WHERE app_id = ?1 AND provider_id = ?2 AND credential_kind = ?3",
                 params![app_id, provider_id, kind.as_str()],
             )?;
-            for model in models {
-                let model = model.trim();
+            for entry in models {
+                let model = entry.public_name.trim();
                 if model.is_empty() {
                     continue;
                 }
                 tx.execute(
                     "INSERT INTO app_grants
                        (app_id, provider_id, credential_kind, model_pattern,
-                        allow_tools, allow_multimodal, log_content)
-                     VALUES (?1,?2,?3,?4,?5,?6,0)",
+                        allow_tools, allow_multimodal, log_content, reasoning_effort)
+                     VALUES (?1,?2,?3,?4,?5,?6,0,?7)",
                     params![
                         app_id,
                         provider_id,
@@ -375,13 +423,18 @@ impl Db {
                         model,
                         allow_tools as i64,
                         allow_multimodal as i64,
+                        // El nivel de ESTE modelo, no uno común a la vía: es la
+                        // diferencia que introduce la spec 0009 y el sitio exacto
+                        // donde sería fácil escribir el mismo valor en todas las
+                        // filas sin que ninguna prueba de un solo modelo lo notara.
+                        entry.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                     ],
                 )?;
             }
             tx.commit()?;
         }
 
-        if models.iter().any(|m| !m.trim().is_empty()) && kind.requires_app_limit() {
+        if models.iter().any(|m| !m.public_name.trim().is_empty()) && kind.requires_app_limit() {
             let window =
                 window_seconds.unwrap_or(crate::config::DEFAULT_SUBSCRIPTION_LIMIT_WINDOW_SECS);
             let max = max_requests
@@ -509,8 +562,8 @@ mod tests {
 
     // -- Modelos permitidos por vía (spec 0004) -----------------------------
 
-    fn models(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    fn models(list: &[&str]) -> Vec<ModelGrant> {
+        list.iter().map(|s| ModelGrant::plain(*s)).collect()
     }
 
     #[test]
@@ -535,6 +588,103 @@ mod tests {
         assert_eq!(patterns, vec!["zen/dos", "zen/uno"]);
         // Las capacidades son de la vía: iguales en todas sus filas.
         assert!(db.grants(&app.id).unwrap().iter().all(|g| g.allow_tools && !g.allow_multimodal));
+    }
+
+    /// Criterio 2 de la spec 0009. Usa **dos** modelos con niveles distintos a
+    /// propósito: con uno solo, la prueba pasaría igual si el código escribiera
+    /// el mismo nivel en todas las filas de la vía — que es exactamente el
+    /// fallo natural aquí, porque hasta esta especificación todas las columnas
+    /// de esta tabla eran de la vía y se escribían iguales.
+    #[test]
+    fn reasoning_effort_roundtrip() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        db.replace_app_models(
+            &app.id,
+            "openai",
+            CredentialKind::SubscriptionOauth,
+            &[
+                ModelGrant {
+                    public_name: "openai/gpt-5.6-sol".into(),
+                    reasoning_effort: Some("high".into()),
+                },
+                ModelGrant {
+                    public_name: "openai/gpt-5.4-mini".into(),
+                    reasoning_effort: Some("low".into()),
+                },
+                // Y uno sin nivel: «sin especificar» debe quedar nulo, no
+                // heredar el de sus vecinos.
+                ModelGrant::plain("openai/gpt-5.4"),
+            ],
+            true,
+            false,
+            Some(10),
+            Some(3600),
+        )
+        .unwrap();
+
+        let by_model: std::collections::HashMap<String, Option<String>> = db
+            .grants(&app.id)
+            .unwrap()
+            .into_iter()
+            .map(|g| (g.model_pattern, g.reasoning_effort))
+            .collect();
+
+        assert_eq!(by_model["openai/gpt-5.6-sol"].as_deref(), Some("high"));
+        assert_eq!(
+            by_model["openai/gpt-5.4-mini"].as_deref(),
+            Some("low"),
+            "cada fila conserva SU nivel; si aquí sale «high» el nivel se está \
+             escribiendo igual en toda la vía"
+        );
+        assert_eq!(by_model["openai/gpt-5.4"], None);
+    }
+
+    /// El otro riesgo que nombra el diseño: `replace_app_models` borra y
+    /// reinserta, así que marcar un modelo nuevo podría borrar los niveles ya
+    /// configurados de los demás si el llamante no los reenvía. Esta prueba fija
+    /// el contrato: quien llama manda la selección completa con sus niveles.
+    #[test]
+    fn marking_another_model_keeps_the_efforts_already_configured() {
+        let db = db();
+        let app = db.create_app("cliente", None).unwrap().app;
+        let configured = ModelGrant {
+            public_name: "openai/gpt-5.6-sol".into(),
+            reasoning_effort: Some("xhigh".into()),
+        };
+
+        db.replace_app_models(
+            &app.id,
+            "openai",
+            CredentialKind::SubscriptionOauth,
+            std::slice::from_ref(&configured),
+            true,
+            false,
+            Some(10),
+            Some(3600),
+        )
+        .unwrap();
+
+        // Se marca otro modelo reenviando el primero tal como estaba.
+        db.replace_app_models(
+            &app.id,
+            "openai",
+            CredentialKind::SubscriptionOauth,
+            &[configured.clone(), ModelGrant::plain("openai/gpt-5.4")],
+            true,
+            false,
+            Some(10),
+            Some(3600),
+        )
+        .unwrap();
+
+        let kept = db
+            .grants(&app.id)
+            .unwrap()
+            .into_iter()
+            .find(|g| g.model_pattern == "openai/gpt-5.6-sol")
+            .expect("el modelo configurado sigue marcado");
+        assert_eq!(kept.reasoning_effort.as_deref(), Some("xhigh"));
     }
 
     #[test]
@@ -706,6 +856,7 @@ mod tests {
                 allow_tools: false,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .unwrap();
