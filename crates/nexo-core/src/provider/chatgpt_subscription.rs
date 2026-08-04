@@ -251,11 +251,27 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelDescriptor> {
                 .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
                 .unwrap_or_default();
-            let reasoning_levels = m
+            // Se conservan los NOMBRES, no solo cuántos son (invariante 6).
+            // Antes esto era `.map(|a| a.len())`: el proveedor decía «low,
+            // medium, high, xhigh» y Nexo se quedaba con «4», así que sabía si
+            // un modelo razonaba pero no qué niveles aceptaba — y no podía
+            // ofrecer una lista honesta al configurarlo (spec 0009).
+            let reasoning_levels: Vec<String> = m
                 .get("supported_reasoning_levels")
                 .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|lvl| {
+                            // Forma real capturada: `{"effort": "high"}`. Se
+                            // admite también la cadena a secas por si cambia.
+                            lvl.get("effort")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| lvl.as_str())
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             Some(ModelDescriptor {
                 api_id: slug.to_string(),
@@ -265,10 +281,11 @@ fn parse_models(body: &serde_json::Value) -> Vec<ModelDescriptor> {
                     vision: modalities.contains(&"image"),
                     audio: modalities.contains(&"audio"),
                     tools: true,
-                    reasoning: reasoning_levels > 0,
+                    reasoning: !reasoning_levels.is_empty(),
                     json_mode: true,
                     streaming: true,
                     embeddings: false,
+                    reasoning_levels,
                 },
                 limits: Limits {
                     context_max: m
@@ -445,6 +462,41 @@ mod tests {
         assert!(!m.caps.audio);
         assert!(m.caps.reasoning, "tiene niveles de razonamiento");
         assert!(m.caps.streaming);
+    }
+
+    /// Criterio 1 de la spec 0009: el catálogo conserva los NOMBRES de los
+    /// niveles admitidos, no solo cuántos son. Antes de este cambio el
+    /// proveedor mandaba `low/medium/high/xhigh` y Nexo guardaba un `4` que se
+    /// tiraba acto seguido al reducirlo a `reasoning: bool`.
+    #[test]
+    fn the_real_reasoning_levels_are_kept_not_just_counted() {
+        let m = &parse_models(&real_catalog_sample())[0];
+        assert_eq!(
+            m.caps.reasoning_levels,
+            vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string()
+            ],
+            "los niveles llegan con su nombre y en el orden que los publica el proveedor"
+        );
+        assert!(m.caps.reasoning, "con niveles, la capacidad sigue siendo cierta");
+    }
+
+    #[test]
+    fn a_model_without_reasoning_levels_declares_none_and_no_capability() {
+        // `supported_reasoning_levels` ausente: ni capacidad ni lista inventada.
+        let sample = serde_json::json!({"models": [{
+            "slug": "sin-razonamiento",
+            "context_window": 1000,
+            "input_modalities": ["text"],
+            "visibility": "list",
+            "supported_in_api": true
+        }]});
+        let m = &parse_models(&sample)[0];
+        assert!(!m.caps.reasoning);
+        assert!(m.caps.reasoning_levels.is_empty());
     }
 
     #[test]

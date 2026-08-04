@@ -293,6 +293,8 @@ fn parse_native_models(body: &Value) -> Vec<ModelDescriptor> {
                 json_mode: !is_embeddings,
                 streaming: !is_embeddings,
                 embeddings: is_embeddings,
+                // LM Studio no publica niveles de esfuerzo por modelo.
+                reasoning_levels: vec![],
             };
 
             let context = m

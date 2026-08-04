@@ -369,6 +369,170 @@ fn app_id(h: &Harness) -> String {
     h.nexo.db().apps().unwrap()[0].id.clone()
 }
 
+// -- Spec 0009: esfuerzo de razonamiento por aplicación y modelo -------------
+
+const REASONING_MODEL: &str = "mock/mock-reasoning";
+
+/// Monta un Nexo con el modelo de razonamiento del mock en el catálogo y un
+/// permiso para él con el nivel indicado (`None` = sin especificar).
+///
+/// El modelo del mock devuelve en su propio texto el esfuerzo que le llegó, así
+/// que la prueba puede comprobar qué recibió el adaptador de verdad en lugar de
+/// suponerlo.
+async fn start_with_reasoning_model(configured: Option<&str>) -> Harness {
+    let h = start().await;
+    h.nexo
+        .db()
+        .replace_models(
+            "mock",
+            CredentialKind::Mock,
+            &[nexo_core::provider::mock::MockAdapter::descriptor_for_tests(
+                nexo_core::provider::mock::REASONING_MODEL,
+            )],
+            nexo_core::catalog::MANIFEST_VERSION,
+        )
+        .expect("catálogo de prueba");
+
+    h.nexo
+        .db()
+        .replace_app_models(
+            &app_id(&h),
+            "mock",
+            CredentialKind::Mock,
+            &[nexo_core::apps::ModelGrant {
+                public_name: REASONING_MODEL.into(),
+                reasoning_effort: configured.map(str::to_string),
+            }],
+            false,
+            false,
+            None,
+            None,
+        )
+        .expect("permiso de prueba");
+    h
+}
+
+/// El esfuerzo que el mock dice haber recibido, extraído de su respuesta.
+fn effort_seen_by_the_adapter(body: &Value) -> String {
+    let text = body["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("el mock responde con texto");
+    text.split("esfuerzo=")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or("(no declarado)")
+        .to_string()
+}
+
+/// Criterio 4: sin `reasoning_effort` en la petición, se aplica el configurado.
+#[tokio::test]
+async fn configured_effort_is_used_when_the_client_sends_none() {
+    let h = start_with_reasoning_model(Some("high")).await;
+
+    let resp = h
+        .post_chat(json!({
+            "model": REASONING_MODEL,
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        effort_seen_by_the_adapter(&body),
+        "high",
+        "el nivel configurado debe llegar al proveedor cuando el cliente no pide ninguno"
+    );
+}
+
+/// Criterio 5: si el cliente manda su nivel, gana el cliente. Es la invariante
+/// 2 hecha prueba: Nexo no puede degradar en silencio lo que se le pidió.
+#[tokio::test]
+async fn the_client_wins_over_the_configured_effort() {
+    let h = start_with_reasoning_model(Some("low")).await;
+
+    let resp = h
+        .post_chat(json!({
+            "model": REASONING_MODEL,
+            "messages": [{"role": "user", "content": "hola"}],
+            "reasoning_effort": "high"
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        effort_seen_by_the_adapter(&body),
+        "high",
+        "lo configurado en Nexo es un defecto, no una imposición: manda el cliente"
+    );
+}
+
+/// Criterio 6: sin nada configurado, el comportamiento es idéntico al de antes
+/// de esta especificación — no se añade `reasoning_effort` a la petición.
+#[tokio::test]
+async fn no_configured_effort_changes_nothing() {
+    let h = start_with_reasoning_model(None).await;
+
+    let resp = h
+        .post_chat(json!({
+            "model": REASONING_MODEL,
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+    assert!(resp.status().is_success(), "estado: {}", resp.status());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        effort_seen_by_the_adapter(&body),
+        "ninguno",
+        "sin configurar, Nexo no manda nivel y decide el proveedor"
+    );
+}
+
+/// Criterio 7: un nivel que el modelo ya no declara se conserva guardado, pero
+/// no se manda al proveedor. La petición sale como si no hubiera configuración.
+#[tokio::test]
+async fn an_effort_no_longer_supported_is_kept_and_flagged() {
+    // `xhigh` queda deliberadamente fuera de los niveles que declara el modelo
+    // del mock: simula un nivel que se configuró y el proveedor ya no admite.
+    let h = start_with_reasoning_model(Some("xhigh")).await;
+
+    let resp = h
+        .post_chat(json!({
+            "model": REASONING_MODEL,
+            "messages": [{"role": "user", "content": "hola"}]
+        }))
+        .await;
+    assert!(
+        resp.status().is_success(),
+        "una configuración obsoleta no puede dejar sin servicio a la aplicación: {}",
+        resp.status()
+    );
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        effort_seen_by_the_adapter(&body),
+        "ninguno",
+        "un nivel que el modelo ya no declara no se manda al proveedor"
+    );
+
+    // Y sigue guardado: es intención declarada del usuario, no se borra sola.
+    let grant = h
+        .nexo
+        .db()
+        .grants(&app_id(&h))
+        .unwrap()
+        .into_iter()
+        .find(|g| g.model_pattern == REASONING_MODEL)
+        .expect("el permiso sigue ahí");
+    assert_eq!(
+        grant.reasoning_effort.as_deref(),
+        Some("xhigh"),
+        "se conserva para poder mostrarlo como huérfano, no se borra en silencio"
+    );
+}
+
 async fn models_listed(h: &Harness) -> Vec<String> {
     let body: Value = h
         .http
@@ -404,7 +568,7 @@ async fn the_catalog_only_lists_the_models_the_app_has_marked() {
             &app_id(&h),
             "mock",
             CredentialKind::Mock,
-            std::slice::from_ref(&uno),
+            &[nexo_core::apps::ModelGrant::plain(uno.clone())],
             true,
             true,
             None,
@@ -426,7 +590,7 @@ async fn a_model_that_is_not_marked_is_refused_by_name_and_nothing_else_is_serve
             &app_id(&h),
             "mock",
             CredentialKind::Mock,
-            &[uno],
+            &[nexo_core::apps::ModelGrant::plain(uno)],
             true,
             true,
             None,
@@ -464,7 +628,7 @@ async fn a_marked_model_still_works() {
             &app_id(&h),
             "mock",
             CredentialKind::Mock,
-            std::slice::from_ref(&uno),
+            &[nexo_core::apps::ModelGrant::plain(uno.clone())],
             true,
             true,
             None,
@@ -818,6 +982,7 @@ async fn start_with_lmstudio() -> Option<Harness> {
                 allow_tools: true,
                 allow_multimodal: true,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .expect("grant");
@@ -1077,6 +1242,7 @@ async fn a_local_server_that_is_down_gives_a_useful_error_not_a_generic_502() {
                 allow_tools: false,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .unwrap();
@@ -1160,6 +1326,7 @@ async fn start_with_zen() -> Option<Harness> {
                 allow_tools: true,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .expect("grant");
@@ -1402,6 +1569,7 @@ async fn start_with_openrouter() -> Option<Harness> {
                 allow_tools: true,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .expect("grant");
@@ -1591,6 +1759,7 @@ async fn start_with_gemini() -> Option<Harness> {
                 allow_tools: true,
                 allow_multimodal: false,
                 log_content: false,
+                reasoning_effort: None,
             },
         )
         .expect("grant");

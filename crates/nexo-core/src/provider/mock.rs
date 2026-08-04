@@ -26,6 +26,14 @@ pub const TRAILING_EVENT_MODEL: &str = "mock-trailing-event";
 pub const SLOW_START_MODEL: &str = "mock-slow-start";
 /// Lo que tarda [`SLOW_START_MODEL`] en emitir su primer evento.
 pub const SLOW_START_DELAY: Duration = Duration::from_millis(150);
+/// Modelo que declara razonamiento y niveles, e incluye en su respuesta el
+/// esfuerzo que le llegó. Existe para poder comprobar de extremo a extremo qué
+/// nivel recibió de verdad el adaptador (spec 0009): sin eso, la prueba no
+/// tiene forma de ver si el defecto configurado se aplicó o no.
+pub const REASONING_MODEL: &str = "mock-reasoning";
+/// Niveles que [`REASONING_MODEL`] declara admitir. `xhigh` queda fuera a
+/// propósito: sirve para probar un nivel configurado que el modelo NO admite.
+pub const REASONING_LEVELS: [&str; 3] = ["low", "medium", "high"];
 
 pub struct MockAdapter {
     delay: Duration,
@@ -54,6 +62,12 @@ impl MockAdapter {
         Self::descriptor_for(SLOW_START_MODEL)
     }
 
+    /// El descriptor de cualquier modelo del mock por su id. Público porque las
+    /// pruebas de extremo a extremo necesitan poner uno concreto en el catálogo.
+    pub fn descriptor_for_tests(api_id: &str) -> ModelDescriptor {
+        Self::descriptor_for(api_id)
+    }
+
     fn descriptor_for(api_id: &str) -> ModelDescriptor {
         ModelDescriptor {
             api_id: api_id.to_string(),
@@ -63,6 +77,12 @@ impl MockAdapter {
                 tools: false,
                 streaming: true,
                 json_mode: true,
+                reasoning: api_id == REASONING_MODEL,
+                reasoning_levels: if api_id == REASONING_MODEL {
+                    REASONING_LEVELS.iter().map(|s| s.to_string()).collect()
+                } else {
+                    vec![]
+                },
                 ..Default::default()
             },
             limits: Limits {
@@ -90,6 +110,7 @@ impl ProviderAdapter for MockAdapter {
             Self::descriptor(),
             Self::trailing_event_descriptor(),
             Self::slow_start_descriptor(),
+            Self::descriptor_for(REASONING_MODEL),
         ])
     }
 
@@ -107,7 +128,16 @@ impl ProviderAdapter for MockAdapter {
             .last()
             .map(|m| m.text())
             .unwrap_or_else(|| "(sin mensaje)".into());
-        let reply = format!("eco: {prompt}");
+        // Solo el modelo de razonamiento delata el esfuerzo: los demás mantienen
+        // su respuesta intacta para no tocar las pruebas que ya la comprueban.
+        let reply = if req.api_model == REASONING_MODEL {
+            format!(
+                "eco[esfuerzo={}]: {prompt}",
+                req.reasoning.map(|r| r.as_str()).unwrap_or("ninguno")
+            )
+        } else {
+            format!("eco: {prompt}")
+        };
         let words: Vec<String> = reply
             .split_inclusive(' ')
             .map(|s| s.to_string())

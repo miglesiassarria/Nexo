@@ -25,6 +25,9 @@ fn caps_full() -> Capabilities {
         json_mode: true,
         streaming: true,
         embeddings: false,
+        // Manifiesto local de respaldo: los niveles reales los trae el catálogo
+        // descubierto, no este fichero. Vacío es «no se sabe».
+        reasoning_levels: vec![],
     }
 }
 

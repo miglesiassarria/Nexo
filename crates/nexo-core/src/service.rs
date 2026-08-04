@@ -1216,6 +1216,13 @@ impl Nexo {
             .map(|r| RouteModel {
                 selected: all || route_grants.iter().any(|g| g.model_pattern == r.public_name),
                 missing: false,
+                // El nivel vive en la fila de ESTE modelo, no en las de la vía:
+                // se busca por nombre exacto y no se hereda del comodín, que no
+                // tiene dónde guardar un valor por modelo.
+                configured_effort: route_grants
+                    .iter()
+                    .find(|g| g.model_pattern == r.public_name)
+                    .and_then(|g| g.reasoning_effort.clone()),
                 public_name: r.public_name,
                 accounting: r.accounting,
                 priced: r.price_input.is_some(),
@@ -1235,6 +1242,7 @@ impl Nexo {
                 accounting: "unavailable".into(),
                 priced: false,
                 caps: Default::default(),
+                configured_effort: g.reasoning_effort.clone(),
             })
             .collect();
         orphans.sort_by(|a, b| a.public_name.cmp(&b.public_name));
@@ -1342,7 +1350,7 @@ impl Nexo {
                 )),
             })?;
 
-        let req = wire
+        let mut req = wire
             .into_internal(resolved.api_id.clone(), resolved.public_name.clone())
             .map_err(|e| AdapterError::Unsupported {
                 capability: "request".into(),
@@ -1354,13 +1362,15 @@ impl Nexo {
         // modelos descubiertos no están en ningún manifiesto local.
         crate::provider::check_capabilities(&req, &resolved.descriptor())?;
 
-        self.policy.check(
+        let decision = self.policy.check(
             app_id,
             &resolved.provider_id,
             resolved.credential_kind,
             &resolved.public_name,
             &req,
         )?;
+
+        apply_configured_effort(&mut req, &decision, &resolved);
 
         let (account, cred) = self.credential_for(&resolved).await?;
 
@@ -1557,6 +1567,66 @@ impl Nexo {
 
 fn chatgpt_subscription_provider() -> &'static str {
     crate::provider::chatgpt_subscription::PROVIDER
+}
+
+/// Rellena el esfuerzo de razonamiento con el configurado en el permiso, si
+/// procede (spec 0009).
+///
+/// **Es un valor por defecto, nunca una imposición.** Las tres condiciones son
+/// obligatorias y cada una tiene su motivo:
+///
+/// 1. `req.reasoning.is_none()` — si el cliente pidió un nivel, gana el cliente.
+///    Sobrescribirlo hacia abajo sería eliminar en silencio una capacidad
+///    solicitada, que es justo lo que prohíbe la invariante 2. Todo lo demás en
+///    `policy.rs` que restringe una capacidad **rechaza con 422**; aquí no hay
+///    nada que rechazar porque el cliente manda.
+/// 2. El permiso tiene un nivel configurado. Nulo es «sin especificar»: no se
+///    manda nada y decide el proveedor, igual que antes de esta funcionalidad.
+/// 3. El modelo **sigue** declarando ese nivel en su catálogo. Un nivel que se
+///    configuró y que el proveedor ya no admite no se manda: la petición sale
+///    como si no hubiera nada configurado.
+///
+/// Sobre la condición 3 y la invariante 2: no aplicar un nivel obsoleto **no**
+/// es degradar en silencio. La invariante prohíbe quitar una capacidad que la
+/// petición pedía, y aquí la petición no pedía ninguna; el resultado es idéntico
+/// al de no tener configuración, y el estado obsoleto se ve en la interfaz de
+/// permisos. La alternativa —rechazar con 422— convertiría una configuración
+/// vieja de Nexo en un fallo de la aplicación cliente, culpando al sitio
+/// equivocado y dejándola sin servicio por un dato que nadie ha vuelto a tocar.
+///
+/// Ocurre después de `check_capabilities` porque el permiso no existe antes, así
+/// que el nivel inyectado no pasa por esa comprobación: la condición 3 es lo
+/// único que impide mandar al proveedor un nivel que no admite.
+fn apply_configured_effort(
+    req: &mut ChatRequest,
+    decision: &crate::policy::PolicyDecision,
+    resolved: &ResolvedModel,
+) {
+    if req.reasoning.is_some() {
+        return;
+    }
+    let Some(configured) = decision.grant.reasoning_effort.as_deref() else {
+        return;
+    };
+    let declared = &resolved.descriptor().caps.reasoning_levels;
+    if !declared.iter().any(|lvl| lvl == configured) {
+        tracing::debug!(
+            model = %resolved.public_name,
+            effort = configured,
+            "el nivel configurado ya no lo declara el modelo: no se manda"
+        );
+        return;
+    }
+    match crate::provider::ReasoningEffort::parse(configured) {
+        Some(effort) => req.reasoning = Some(effort),
+        // Guardado pero no representable: el catálogo puede publicar niveles
+        // que este Nexo aún no conoce (D5). Se deja como estaba en lugar de
+        // enviar algo a medias.
+        None => tracing::debug!(
+            effort = configured,
+            "nivel configurado que esta versión de Nexo no sabe enviar"
+        ),
+    }
 }
 
 /// Solo se cae al respaldo cuando el fallo es de la ruta, no del cliente.
@@ -1790,6 +1860,11 @@ pub struct RouteModel {
     pub accounting: String,
     pub priced: bool,
     pub caps: crate::provider::Capabilities,
+    /// Nivel de esfuerzo configurado para este modelo en esta aplicación, si hay
+    /// uno. `None` es «sin especificar». La interfaz lo compara con
+    /// `caps.reasoning_levels` para saber si sigue siendo válido: si no está en
+    /// esa lista, se configuró y el proveedor ya no lo admite (spec 0009).
+    pub configured_effort: Option<String>,
 }
 
 /// Los modelos de una vía para una aplicación concreta.
@@ -2356,6 +2431,7 @@ mod tests {
                     allow_tools: false,
                     allow_multimodal: false,
                     log_content: false,
+                    reasoning_effort: None,
                 },
             )
             .unwrap();
@@ -2539,6 +2615,7 @@ mod tests {
                     allow_tools: true,
                     allow_multimodal: true,
                     log_content: false,
+                    reasoning_effort: None,
                 },
             )
             .unwrap();
@@ -2624,7 +2701,7 @@ mod tests {
                 &app.id,
                 "zen",
                 CredentialKind::ApiKey,
-                &[String::from("zen/modelo-que-se-fue")],
+                &[crate::apps::ModelGrant::plain("zen/modelo-que-se-fue")],
                 true,
                 true,
                 None,
@@ -2639,7 +2716,7 @@ mod tests {
                 &app.id,
                 "zen",
                 CredentialKind::ApiKey,
-                &[String::from("zen/dos")],
+                &[crate::apps::ModelGrant::plain("zen/dos")],
                 true,
                 true,
                 None,
@@ -2663,7 +2740,7 @@ mod tests {
                 &app.id,
                 "zen",
                 CredentialKind::ApiKey,
-                &["zen/dos", "zen/ya-no-existe"].map(String::from),
+                &["zen/dos", "zen/ya-no-existe"].map(crate::apps::ModelGrant::plain),
                 true,
                 true,
                 None,
@@ -2708,6 +2785,7 @@ mod tests {
                     allow_tools: true,
                     allow_multimodal: true,
                     log_content: false,
+                    reasoning_effort: None,
                 },
             )
             .unwrap();

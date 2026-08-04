@@ -144,6 +144,9 @@ fn parse_model(m: &Value) -> ModelsDevEntry {
         json_mode: true,
         streaming: true,
         embeddings: false,
+        // `models.dev` publica `reasoning_options` (toggle, budget_tokens), no
+        // una lista de niveles con nombre: no hay nada que conservar aquí todavía.
+        reasoning_levels: vec![],
     };
 
     let limits = Limits {

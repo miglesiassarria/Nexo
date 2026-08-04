@@ -81,7 +81,29 @@ export interface RouteModel {
   accounting: string;
   priced: boolean;
   caps: Capabilities;
+  /**
+   * Nivel de esfuerzo configurado para este modelo en esta aplicación, o `null`
+   * si está sin especificar. Si no aparece en `caps.reasoning_levels`, se
+   * configuró y el proveedor ya no lo admite: se muestra como huérfano.
+   */
+  configured_effort: string | null;
 }
+
+/** Un modelo marcado, con su nivel de esfuerzo si tiene uno. */
+export interface ModelGrant {
+  public_name: string;
+  reasoning_effort?: string | null;
+}
+
+/**
+ * Niveles de esfuerzo que Nexo sabe enviar. **Debe coincidir con el enum
+ * `ReasoningEffort` de `crates/nexo-core/src/provider/mod.rs`.**
+ *
+ * Existe porque un modelo puede declarar un nivel que esta versión de Nexo
+ * todavía no sabe representar: se muestra, pero no se puede elegir, en lugar de
+ * ofrecerlo y descartarlo luego en silencio (D5 de la spec 0009).
+ */
+export const NEXO_REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
 
 /** Los modelos de una vía para una aplicación concreta. */
 export interface RouteModels {
@@ -119,6 +141,12 @@ export interface Capabilities {
   json_mode: boolean;
   streaming: boolean;
   embeddings: boolean;
+  /**
+   * Niveles de esfuerzo que el modelo declara admitir, con el nombre que les da
+   * el proveedor. Vacío significa «no se sabe», no «ninguno»: la mayoría de
+   * vías no publican esta lista.
+   */
+  reasoning_levels: string[];
 }
 
 export interface CatalogRow {
@@ -313,7 +341,7 @@ export const api = {
     appId: string;
     providerId: string;
     credentialKind: string;
-    models: string[];
+    models: ModelGrant[];
     allowTools: boolean;
     allowMultimodal: boolean;
     maxRequests?: number | null;

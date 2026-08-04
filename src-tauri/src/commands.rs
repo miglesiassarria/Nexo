@@ -302,7 +302,7 @@ pub fn set_app_models(
     app_id: String,
     provider_id: String,
     credential_kind: String,
-    models: Vec<String>,
+    models: Vec<nexo_core::apps::ModelGrant>,
     allow_tools: bool,
     allow_multimodal: bool,
     max_requests: Option<i64>,
