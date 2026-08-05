@@ -28,6 +28,8 @@ jobs:
 
       - run: npm run check
 
+      - run: npm run site:build
+
       - run: cargo test --workspace
 
       - run: cargo clippy --workspace --all-targets

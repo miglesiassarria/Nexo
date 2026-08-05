@@ -14,8 +14,10 @@ cd "$root"
 app="target/release/bundle/macos/Nexo.app"
 target="/Applications/Nexo.app"
 
-echo "▸ Compilando…"
-npm run tauri build
+echo "▸ Compilando el bundle de macOS…"
+# Este flujo instala el .app directamente. El DMG pertenece a distribución y su
+# creación puede requerir recursos del entorno que no intervienen en la instalación.
+npm run tauri build -- --bundles app
 
 if [ ! -d "$app" ]; then
   echo "✗ no se generó $app" >&2

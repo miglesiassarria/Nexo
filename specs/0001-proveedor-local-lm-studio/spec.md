@@ -1,6 +1,6 @@
 # 0001 · Usar los modelos de LM Studio desde Nexo
 
-- **Estado:** spec
+- **Estado:** hecho
 - **Creada:** 2026-07-31
 - **Pedida por:** Manuel Iglesias — «poder gestionar a través de Nexo la conexión
   con los modelos de LM Studio y de Ollama».

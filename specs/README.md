@@ -10,12 +10,13 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0002](0002-proveedores-genericos-y-opencode-zen/spec.md) | Proveedores OpenAI-compatible añadidos por el usuario, y OpenCode Zen | `hecho` | Verificada contra Zen real, 60 modelos. Anthropic-compatible aplazado a petición del usuario |
 | [0003](0003-vista-de-proveedores-legible/spec.md) | Una vista de Proveedores que se lee de un vistazo | `build` | Arregla además que un proveedor propio con API key salía duplicado y en la sección de OpenAI |
 | [0004](0004-modelos-permitidos-por-aplicacion/spec.md) | Elegir qué modelos sirve Nexo a cada aplicación | `build` | La mitad del almacenamiento ya existía sin usarse; el catálogo no aplicaba la misma regla que el gateway |
-| [0005](0005-granularidad-horaria-y-tokens-de-entrada-y-salid/spec.md) | Periodos por horas y tokens de entrada/salida en el panel | `build` | El rollup horario no puede responder con exactitud a ventanas de menos de un día; para esas se consulta el detalle directamente |
+| [0005](0005-granularidad-horaria-y-tokens-de-entrada-y-salid/spec.md) | Periodos por horas y tokens de entrada/salida en el panel | `hecho` | Verificación completa e instalación registradas en `tasks.md`; para ventanas cortas se consulta el detalle directamente |
 
-| [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `build` | El mecanismo de presets ya existía para esto; verificado contra `models.dev` real antes de fijar la URL |
+| [0006](0006-atajo-de-proveedor-openrouter/spec.md) | Atajo de proveedor: OpenRouter | `hecho` | Verificado contra `models.dev` y la API real; cierre completo registrado en `tasks.md` |
 | [0007](0007-acceso-red-local/spec.md) | Acceso desde la red local | `hecho` | Requiere [ADR 0003](../docs/adr/0003-acceso-desde-la-red-local.md); verificado por test y contra el binario real instalado; falta el clic real en el interruptor (bloqueado por el mismo permiso de Accesibilidad de siempre) |
 | [0008](0008-atajo-de-proveedor-gemini-api-key/spec.md) | Atajo de proveedor: Gemini (API key) | `hecho` | Verificado con clave real. Dos arreglos reales encontrados al construir: id de modelo con prefijo `models/` no reconocido por `models.dev`, y el sobre de error de Gemini (`google.rpc.Status`, a veces en array) no lo reconocía el clasificador compartido |
 | [0009](0009-esfuerzo-de-razonamiento-por-aplicacion-y-modelo/spec.md) | Esfuerzo de razonamiento por aplicación y modelo | `build` | Primer valor por modelo en `app_grants`; arregla que `grant_for` elegía la primera fila coincidente y no la más específica. Falta comprobar el selector con el catálogo real de suscripción: hoy guarda el manifiesto, sin niveles |
+| [0010](0010-web-publica-y-documentacion-en-github-pages/spec.md) | Web pública y documentación en GitHub Pages | `tasks` | Aprobada por el usuario; web estática independiente del panel Tauri y despliegue mediante Actions |
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

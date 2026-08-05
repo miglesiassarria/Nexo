@@ -1,6 +1,6 @@
 # 0002 · Proveedores genéricos OpenAI-compatible y OpenCode Zen
 
-- **Estado:** spec
+- **Estado:** hecho
 - **Creada:** 2026-07-31
 - **Pedida por:** Manuel Iglesias — «proveedores que usen el estándar de OpenAI,
   proveedores que usen el estándar de Anthropic, y OpenCode, del que tengo API key».

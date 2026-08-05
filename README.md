@@ -6,6 +6,8 @@
 
 Nexo es una aplicación de escritorio que expone un **gateway local compatible con OpenAI**. Conectas tus cuentas una vez en Nexo y tus herramientas apuntan a `http://127.0.0.1:8787/v1` con un token propio, en lugar de repartir API keys por todas partes.
 
+**[Ver la web pública y la guía completa](https://miglesiassarria.github.io/Nexo/)**
+
 Su razón de ser es usar la **suscripción que ya pagas** —empezando por ChatGPT— desde cualquier aplicación, sin volver a pagar por token. Y como contrapartida, registrar localmente qué aplicación usa qué modelo, con qué latencia y con qué consumo.
 
 ```text
@@ -36,8 +38,10 @@ Primera versión funcional. Lo que hay hoy:
 | Icono en la barra de estado, cierre sin parar el gateway | ✅ |
 | Modelos locales con LM Studio, detectado solo | ✅ **verificado** contra LM Studio 0.4.20 |
 | Proveedores OpenAI-compatible añadidos por el usuario, y OpenCode Zen como atajo | ✅ **verificado** contra Zen real, 60 modelos |
+| OpenRouter como atajo OpenAI-compatible | ✅ **verificado** contra catálogo y API reales |
+| Google Gemini por API key, mediante su capa OpenAI-compatible | ✅ **verificado** contra la API real |
 | Capacidades y precio de esos modelos cruzados con `models.dev` | ✅ |
-| Google Gemini, Anthropic-compatible, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
+| Gemini por OAuth, Anthropic-compatible, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
 
 ## Requisitos
 
@@ -206,6 +210,7 @@ Todo lo que el gateway necesita para funcionar vive en Rust. La interfaz solo pr
 | [docs/modelo-datos.md](docs/modelo-datos.md) | Esquema SQLite |
 | [CLAUDE.md](CLAUDE.md) | Metodología, verificación e invariantes que no se negocian |
 | [specs/](specs/) | Especificaciones de cada cambio, con su diseño y sus tareas |
+| [Web pública](https://miglesiassarria.github.io/Nexo/) | Presentación, guía de uso, arquitectura, seguridad e integración |
 
 ## Privacidad
 

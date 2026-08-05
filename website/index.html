@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07152c" />
+    <meta
+      name="description"
+      content="Nexo es un gateway local y extensible que conecta todas tus aplicaciones con modelos de IA, suscripciones y proveedores desde un único punto de acceso."
+    />
+    <meta property="og:title" content="Nexo — Tu IA, un solo punto de acceso" />
+    <meta
+      property="og:description"
+      content="Gateway local compatible con OpenAI, permisos por aplicación y estadísticas honestas."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://miglesiassarria.github.io/Nexo/" />
+    <meta property="og:image" content="https://miglesiassarria.github.io/Nexo/nexo-symbol-color.svg" />
+    <link rel="canonical" href="https://miglesiassarria.github.io/Nexo/" />
+    <link rel="icon" href="./favicon.ico" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="stylesheet" href="./site.css" />
+    <title>Nexo — Gateway local para modelos de IA</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#contenido">Saltar al contenido</a>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <header class="site-header" data-header>
+      <a class="wordmark" href="#inicio" aria-label="Nexo, volver al inicio">
+        <img src="./nexo-symbol-color.svg" alt="" width="36" height="36" />
+        <span>Nexo</span>
+        <small>local AI gateway</small>
+      </a>
+
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+        <span></span><span></span><span></span>
+        <span class="sr-only">Abrir navegación</span>
+      </button>
+
+      <nav id="site-nav" class="site-nav" aria-label="Navegación principal">
+        <a href="#como-funciona">Cómo funciona</a>
+        <a href="#empezar">Empezar</a>
+        <a href="#control">Control</a>
+        <a href="#seguridad">Seguridad</a>
+        <a href="#desarrollo">Desarrollo</a>
+      </nav>
+
+      <a class="header-cta" href="https://github.com/miglesiassarria/Nexo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.54 1.03 1.54 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.55 9.55 0 0 1 12 6.82c.85 0 1.71.11 2.51.34 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86V21c0 .27.18.58.69.48A10 10 0 0 0 12 2Z" /></svg>
+        Ver código
+      </a>
+    </header>
+
+    <main id="contenido">
+      <section class="hero section" id="inicio">
+        <div class="hero-copy" data-reveal>
+          <div class="eyebrow"><span class="pulse"></span> Gateway local · código abierto</div>
+          <h1>Tu IA.<br /><em>Un solo nexo.</em></h1>
+          <p class="hero-lead">
+            Conecta tus aplicaciones a ChatGPT, OpenAI, Gemini, OpenRouter, LM Studio y cualquier
+            proveedor compatible desde una sola URL. Tus credenciales y tus estadísticas se quedan
+            en tu equipo.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#empezar">Configurar en 4 pasos</a>
+            <a class="button secondary" href="#arquitectura">Explorar la arquitectura</a>
+          </div>
+          <div class="hero-facts" aria-label="Características principales">
+            <span><b>OpenAI</b> compatible</span>
+            <span><b>Local</b> por defecto</span>
+            <span><b>MIT</b> open source</span>
+          </div>
+        </div>
+
+        <div class="gateway-stage" data-reveal data-delay="1" aria-label="Diagrama animado del gateway Nexo">
+          <div class="stage-grid" aria-hidden="true"></div>
+          <div class="stage-label top">Petición en curso</div>
+          <div class="route source-route">
+            <div class="route-node compact">
+              <span class="node-kicker">Aplicación</span>
+              <strong>OpenCode</strong>
+              <code>nx_••••••</code>
+            </div>
+            <div class="signal-line"><i></i><i></i><i></i></div>
+          </div>
+
+          <div class="nexo-core">
+            <div class="core-orbit orbit-a"></div>
+            <div class="core-orbit orbit-b"></div>
+            <img src="./nexo-symbol-color.svg" alt="Nexo" />
+            <span>localhost:8787</span>
+          </div>
+
+          <div class="route target-route">
+            <div class="signal-line reverse"><i></i><i></i><i></i></div>
+            <div class="provider-stack">
+              <div class="provider-pill active"><span class="provider-mark openai">O</span> ChatGPT <b>OAuth</b></div>
+              <div class="provider-pill"><span class="provider-mark gemini">✦</span> Gemini <b>API</b></div>
+              <div class="provider-pill"><span class="provider-mark local">L</span> LM Studio <b>Local</b></div>
+            </div>
+          </div>
+
+          <div class="metric-float metric-a"><small>TTFT</small><strong>286 ms</strong></div>
+          <div class="metric-float metric-b"><small>Tokens</small><strong>1.842</strong></div>
+          <div class="stage-status"><span></span> Todo ocurre en tu máquina</div>
+        </div>
+      </section>
+
+      <section class="trust-rail" aria-label="Estado actual del proyecto">
+        <div><span>01</span><strong>Primera versión funcional</strong><small>Probada en macOS</small></div>
+        <div><span>02</span><strong>Gateway persistente</strong><small>Funciona con la ventana cerrada</small></div>
+        <div><span>03</span><strong>Datos locales</strong><small>Sin telemetría externa</small></div>
+        <div><span>04</span><strong>CI verificada</strong><small>Rust · Svelte · Tauri</small></div>
+      </section>
+
+      <section class="section manifesto" id="como-funciona">
+        <div class="section-index">01 / PROPÓSITO</div>
+        <div class="manifesto-grid">
+          <div data-reveal>
+            <p class="overline">La capa común que faltaba</p>
+            <h2>Una integración.<br />Todos tus modelos.</h2>
+          </div>
+          <div class="manifesto-copy" data-reveal data-delay="1">
+            <p>
+              Cada herramienta pide una clave, una URL y una forma distinta de entender modelos.
+              Nexo absorbe esa complejidad: tus clientes hablan un contrato compatible con OpenAI y
+              el núcleo decide la vía correcta sin repartir credenciales maestras.
+            </p>
+            <p>
+              Es un <strong>hub funcional</strong> para conectar y un <strong>hub de información</strong>
+              para entender qué ocurrió: quién llamó, qué modelo respondió, cuánto tardó y de dónde
+              sale cada cifra de uso.
+            </p>
+          </div>
+        </div>
+
+        <div class="principle-grid">
+          <article class="principle-card" data-reveal>
+            <span class="card-number">A</span>
+            <h3>Conecta una vez</h3>
+            <p>OAuth, API keys y servidores locales viven detrás de una misma puerta de entrada.</p>
+          </article>
+          <article class="principle-card featured" data-reveal data-delay="1">
+            <span class="card-number">B</span>
+            <h3>Concede, no expongas</h3>
+            <p>Cada aplicación recibe su token, sus modelos, capacidades y límites exactos.</p>
+          </article>
+          <article class="principle-card" data-reveal data-delay="2">
+            <span class="card-number">C</span>
+            <h3>Mide con honestidad</h3>
+            <p>Dato, estimación, suscripción y no disponible nunca se mezclan sin contexto.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section architecture" id="arquitectura">
+        <div class="section-index light">02 / ARQUITECTURA</div>
+        <div class="section-heading light" data-reveal>
+          <p class="overline">El recorrido de una petición</p>
+          <h2>Pequeño por fuera.<br />Riguroso por dentro.</h2>
+          <p>La lógica vive en Rust. Tauri orquesta el escritorio y Svelte presenta el estado.</p>
+        </div>
+
+        <div class="architecture-map" data-reveal>
+          <article class="arch-column clients">
+            <span class="arch-label">Clientes</span>
+            <div class="client-list">
+              <span>OpenCode</span><span>Continue</span><span>Scripts</span><span>Tu app</span>
+            </div>
+            <code>Authorization: Bearer nx_…</code>
+          </article>
+          <div class="arch-arrow"><span>HTTP / SSE</span></div>
+          <article class="arch-column engine">
+            <span class="arch-label">Nexo core · Rust</span>
+            <ol>
+              <li><b>01</b> Autentica la aplicación</li>
+              <li><b>02</b> Resuelve modelo y credencial</li>
+              <li><b>03</b> Aplica permisos y límites</li>
+              <li><b>04</b> Traduce petición y stream</li>
+              <li><b>05</b> Registra evidencia local</li>
+            </ol>
+          </article>
+          <div class="arch-arrow"><span>Adaptador</span></div>
+          <article class="arch-column destinations">
+            <span class="arch-label">Destinos</span>
+            <div class="destination-list">
+              <span><i class="cloud-dot"></i> Proveedores cloud</span>
+              <span><i class="local-dot"></i> Modelos locales</span>
+              <span><i class="compat-dot"></i> Endpoints propios</span>
+            </div>
+            <code>Respuesta normalizada</code>
+          </article>
+        </div>
+
+        <div class="architecture-notes">
+          <p><span>↳</span> Cerrar la ventana no detiene el gateway.</p>
+          <p><span>↳</span> Añadir un proveedor no obliga a cambiar el router.</p>
+          <p><span>↳</span> Lo frágil queda aislado por adaptador.</p>
+        </div>
+      </section>
+
+      <section class="section providers" id="proveedores">
+        <div class="section-index">03 / PROVEEDORES</div>
+        <div class="section-heading split" data-reveal>
+          <div>
+            <p class="overline">Varias vías, un catálogo</p>
+            <h2>Elige cómo llegar.</h2>
+          </div>
+          <p>
+            El proveedor y el tipo de credencial son dos ejes distintos. El mismo modelo por
+            suscripción y por API key puede tener capacidades, límites y contabilidad diferentes.
+          </p>
+        </div>
+
+        <div class="provider-table" data-reveal>
+          <div class="table-head"><span>Proveedor</span><span>Vía</span><span>Catálogo</span><span>Estado</span></div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb ink">O</i><b>ChatGPT</b></span>
+            <span>OAuth de suscripción</span><span>Descubierto, capacidades reales</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb ink">O</i><b>OpenAI</b></span>
+            <span>API key</span><span>Manifiesto + API</span><span class="state ready">Disponible</span>
+          </div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb blue">L</i><b>LM Studio</b></span>
+            <span>Servidor local</span><span>Detección automática</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb rainbow">✦</i><b>Gemini</b></span>
+            <span>API key compatible</span><span>API + models.dev</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb coral">R</i><b>OpenRouter</b></span>
+            <span>API key compatible</span><span>API + models.dev</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb green">Z</i><b>OpenCode Zen</b></span>
+            <span>API key compatible</span><span>60 modelos reales</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row muted-row">
+            <span class="provider-name"><i class="brand-orb pale">+</i><b>Tu endpoint</b></span>
+            <span>OpenAI-compatible</span><span>Dinámico</span><span class="state ready">Configurable</span>
+          </div>
+        </div>
+
+        <aside class="risk-callout" data-reveal>
+          <span class="risk-icon">!</span>
+          <div>
+            <strong>La vía de suscripción no es una integración oficial.</strong>
+            <p>
+              Nexo reutiliza un flujo OAuth del cliente oficial que funciona hoy, pero puede romperse
+              o incumplir condiciones del proveedor. Antes del login se muestra el riesgo y cada
+              aplicación necesita un límite obligatorio.
+            </p>
+          </div>
+          <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/adr/0001-oauth-de-suscripcion.md">Leer ADR 0001 →</a>
+        </aside>
+      </section>
+
+      <section class="section quickstart" id="empezar">
+        <div class="section-index">04 / PRIMEROS PASOS</div>
+        <div class="section-heading split" data-reveal>
+          <div><p class="overline">De cero a una petición</p><h2>Cuatro decisiones.<br />Una sola URL.</h2></div>
+          <p>La aplicación cliente nunca recibe la credencial del proveedor. Solo conoce su token revocable de Nexo.</p>
+        </div>
+
+        <div class="steps">
+          <article class="step" data-reveal>
+            <span class="step-no">01</span>
+            <div><h3>Instala y abre Nexo</h3><p>Compila la aplicación en macOS. El gateway arranca en <code>127.0.0.1:8787</code>.</p></div>
+          </article>
+          <article class="step" data-reveal>
+            <span class="step-no">02</span>
+            <div><h3>Conecta un proveedor</h3><p>Completa OAuth, pega una API key o deja que Nexo detecte LM Studio.</p></div>
+          </article>
+          <article class="step" data-reveal>
+            <span class="step-no">03</span>
+            <div><h3>Crea una aplicación</h3><p>Recibirás un token <code>nx_…</code> una sola vez. Nexo guarda únicamente su hash.</p></div>
+          </article>
+          <article class="step" data-reveal>
+            <span class="step-no">04</span>
+            <div><h3>Concede modelos y límites</h3><p>Marca exactamente qué puede usar. Después apunta el cliente a la URL local.</p></div>
+          </article>
+        </div>
+
+        <div class="code-workbench" data-reveal>
+          <div class="workbench-head">
+            <div class="terminal-dots"><i></i><i></i><i></i></div>
+            <div class="code-tabs" role="tablist" aria-label="Ejemplos de integración">
+              <button class="code-tab active" role="tab" aria-selected="true" data-code-tab="curl">curl</button>
+              <button class="code-tab" role="tab" aria-selected="false" data-code-tab="config">Configuración</button>
+            </div>
+            <button class="copy-button" type="button" data-copy-target="code-curl">Copiar</button>
+          </div>
+          <pre id="code-curl" class="code-panel active" data-code-panel="curl"><code><span class="token-command">curl</span> -N http://127.0.0.1:8787/v1/chat/completions \
+  -H <span class="token-string">'Authorization: Bearer nx_tu_token'</span> \
+  -H <span class="token-string">'content-type: application/json'</span> \
+  -d <span class="token-string">'{
+    "model": "openai/gpt-5.5",
+    "messages": [{"role": "user", "content": "hola"}],
+    "stream": true
+  }'</span></code></pre>
+          <pre id="code-config" class="code-panel" data-code-panel="config"><code>{
+  <span class="token-key">"baseURL"</span>: <span class="token-string">"http://127.0.0.1:8787/v1"</span>,
+  <span class="token-key">"apiKey"</span>: <span class="token-string">"nx_tu_token"</span>,
+  <span class="token-key">"model"</span>: <span class="token-string">"openai/gpt-5.5"</span>
+}</code></pre>
+          <div class="workbench-foot">
+            <span><i></i> Streaming SSE</span><span>Formato OpenAI</span><span>Modelo con prefijo</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section control" id="control">
+        <div class="section-index light">05 / CONTROL</div>
+        <div class="section-heading light split" data-reveal>
+          <div><p class="overline">Menor privilegio por diseño</p><h2>Cada aplicación<br />ve solo lo suyo.</h2></div>
+          <p>Una aplicación nueva nace sin acceso. Tú eliges cada modelo, capacidad y límite.</p>
+        </div>
+
+        <div class="control-layout">
+          <div class="permission-demo" data-reveal>
+            <div class="demo-titlebar"><span>Permisos · OpenCode</span><i>3 modelos</i></div>
+            <div class="route-heading"><span class="brand-orb ink">O</span><div><b>openai</b><small>Suscripción</small></div><span class="limit-chip">60 peticiones / hora</span></div>
+            <label class="model-line selected"><input type="checkbox" checked disabled /><span class="fake-check">✓</span><b>openai/gpt-5.5</b><small>high</small></label>
+            <label class="model-line selected"><input type="checkbox" checked disabled /><span class="fake-check">✓</span><b>openai/gpt-5.4</b><small>sin especificar</small></label>
+            <label class="model-line"><input type="checkbox" disabled /><span class="fake-check"></span><b>openai/gpt-5.4-mini</b><small>—</small></label>
+            <div class="demo-note"><span>i</span> El nivel configurado es un valor por defecto. Si el cliente pide otro, gana el cliente.</div>
+          </div>
+
+          <div class="control-points">
+            <article data-reveal><span>01</span><div><h3>Token independiente</h3><p>Revoca una aplicación sin romper ninguna otra.</p></div></article>
+            <article data-reveal><span>02</span><div><h3>Permiso por modelo</h3><p>El catálogo que ve el cliente coincide con lo que el gateway acepta.</p></div></article>
+            <article data-reveal><span>03</span><div><h3>Capacidades explícitas</h3><p>Herramientas y multimodalidad se conceden; una incompatibilidad devuelve 422.</p></div></article>
+            <article data-reveal><span>04</span><div><h3>Límite obligatorio</h3><p>Las rutas de suscripción nunca quedan abiertas sin protección.</p></div></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section observability" id="estadisticas">
+        <div class="section-index">06 / INFORMACIÓN</div>
+        <div class="section-heading split" data-reveal>
+          <div><p class="overline">Observabilidad honesta</p><h2>Medir no es<br />inventar.</h2></div>
+          <p>Nexo conserva el dato original del proveedor y separa lo confirmado de lo inferido.</p>
+        </div>
+
+        <div class="accounting-grid">
+          <article data-reveal><span class="accounting-mark reported"></span><small>01</small><h3>Reportado</h3><p>El proveedor comunicó la cifra. Es un dato.</p></article>
+          <article data-reveal data-delay="1"><span class="accounting-mark estimated"></span><small>02</small><h3>Estimado</h3><p>Calculado con precios públicos y siempre señalado.</p></article>
+          <article data-reveal data-delay="2"><span class="accounting-mark subscription"></span><small>03</small><h3>Suscripción</h3><p>Coste marginal cero; cuota consumida desconocida.</p></article>
+          <article data-reveal data-delay="3"><span class="accounting-mark unavailable"></span><small>04</small><h3>No disponible</h3><p>Sin evidencia suficiente. Nunca se sustituye por cero.</p></article>
+        </div>
+
+        <div class="dashboard-demo" data-reveal>
+          <div class="dash-sidebar">
+            <img src="./nexo-symbol-color.svg" alt="" /><span>Panel</span><span>Proveedores</span><span>Aplicaciones</span><span>Modelos</span><span>Configuración</span>
+          </div>
+          <div class="dash-main">
+            <div class="dash-head"><div><small>Últimas 12 horas</small><strong>Actividad del gateway</strong></div><span class="state verified">Activo</span></div>
+            <div class="dash-metrics">
+              <div><small>Peticiones</small><strong>1.284</strong><em>+12,4%</em></div>
+              <div><small>Tokens entrada</small><strong>2,8 M</strong><em>reportados</em></div>
+              <div><small>Latencia media</small><strong>842 ms</strong><em>TTFT 221 ms</em></div>
+            </div>
+            <div class="chart" aria-label="Gráfico decorativo de actividad">
+              <div class="chart-lines"></div>
+              <svg viewBox="0 0 720 170" preserveAspectRatio="none" aria-hidden="true">
+                <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2868ee" stop-opacity=".32"/><stop offset="1" stop-color="#2868ee" stop-opacity="0"/></linearGradient></defs>
+                <path class="chart-area" d="M0 145 C55 130 75 140 118 112 S190 132 238 88 S315 104 360 62 S442 94 492 50 S566 71 612 35 S680 50 720 18 L720 170 L0 170 Z"/>
+                <path class="chart-line" d="M0 145 C55 130 75 140 118 112 S190 132 238 88 S315 104 360 62 S442 94 492 50 S566 71 612 35 S680 50 720 18"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section security" id="seguridad">
+        <div class="section-index light">07 / SEGURIDAD Y PRIVACIDAD</div>
+        <div class="section-heading light split" data-reveal>
+          <div><p class="overline">Local es una decisión</p><h2>Tus secretos no<br />son configuración.</h2></div>
+          <p>Nexo separa credenciales, configuración y métricas para que cada dato viva donde corresponde.</p>
+        </div>
+
+        <div class="security-grid">
+          <article class="security-main" data-reveal>
+            <div class="vault-visual">
+              <div class="vault-ring"></div><div class="vault-ring inner"></div>
+              <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M17 28v-7a15 15 0 0 1 30 0v7M13 28h38v29H13zM32 39v8" /></svg>
+            </div>
+            <div><span class="security-kicker">ALMACÉN SEGURO DEL SISTEMA</span><h3>API keys y tokens OAuth nunca entran en SQLite.</h3><p>Keychain en macOS; almacenes equivalentes del sistema en las plataformas previstas.</p></div>
+          </article>
+          <article data-reveal><span class="mini-icon">#</span><h3>Tokens hasheados</h3><p>El token de una aplicación solo se muestra al emitirlo.</p></article>
+          <article data-reveal><span class="mini-icon">○</span><h3>Sin contenido por defecto</h3><p>Prompts y respuestas no forman parte del registro normal.</p></article>
+          <article data-reveal><span class="mini-icon">⌂</span><h3>Solo localhost</h3><p>La red local se activa expresamente y siempre con token y TLS.</p></article>
+          <article data-reveal><span class="mini-icon">↺</span><h3>Retención controlable</h3><p>Borra detalle sin perder necesariamente el histórico agregado.</p></article>
+        </div>
+
+        <div class="lan-guide" id="lan" data-reveal>
+          <div><span class="lan-tag">OPCIONAL</span><h3>Usar Nexo desde tu red local</h3><p>Una instancia puede atender tus otros equipos sin convertirse en servicio de Internet.</p></div>
+          <ol>
+            <li><span>1</span>Activa “mi red local” y confirma el riesgo.</li>
+            <li><span>2</span>Reinicia: Nexo escucha en HTTPS con certificado propio.</li>
+            <li><span>3</span>Acepta la huella mostrada en cada cliente.</li>
+            <li><span>4</span>Usa el mismo token por aplicación. Sin token: 401.</li>
+          </ol>
+          <div class="lan-boundary"><b>No incluye</b> Internet, UPnP, túneles, multiusuario ni despliegue empresarial.</div>
+        </div>
+      </section>
+
+      <section class="section development" id="desarrollo">
+        <div class="section-index">08 / DESARROLLO</div>
+        <div class="section-heading split" data-reveal>
+          <div><p class="overline">Diseñar antes de acumular</p><h2>El código empieza<br />en una especificación.</h2></div>
+          <p>Los cambios sustanciales avanzan por puertas explícitas. La realidad puede devolver el trabajo a una fase anterior.</p>
+        </div>
+
+        <div class="sdd-track" data-reveal>
+          <article><span>/spec</span><h3>Qué y por qué</h3><p>Problema, comportamiento, criterios ejecutables y fuera de alcance.</p><i>aprobación del usuario</i></article>
+          <b class="track-arrow">→</b>
+          <article><span>/design</span><h3>Cómo encaja</h3><p>Archivos, contratos, decisiones, alternativas y riesgos.</p><i>contraste con el código</i></article>
+          <b class="track-arrow">→</b>
+          <article><span>/tasks</span><h3>Pasos verificables</h3><p>Cada tarea cabe en una sesión y dice cómo demostrarla.</p><i>repositorio siempre útil</i></article>
+          <b class="track-arrow">→</b>
+          <article><span>/build</span><h3>Evidencia real</h3><p>Implementar, ejecutar, corregir y solo entonces marcar.</p><i>CI + aplicación instalada</i></article>
+        </div>
+
+        <div class="dev-columns">
+          <div class="dev-command" data-reveal><small>VERIFICACIÓN COMPLETA</small><code>cargo test --workspace<br />cargo clippy --workspace --all-targets<br />npm run check</code></div>
+          <div class="dev-links" data-reveal>
+            <a href="https://github.com/miglesiassarria/Nexo/tree/main/specs"><span>Especificaciones</span><b>Historial de decisiones →</b></a>
+            <a href="https://github.com/miglesiassarria/Nexo/tree/main/docs/adr"><span>ADR</span><b>Arquitectura y riesgos →</b></a>
+            <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/contrato-proveedor.md"><span>Contrato</span><b>Añadir un proveedor →</b></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section roadmap" id="roadmap">
+        <div class="section-index">09 / ESTADO</div>
+        <div class="section-heading split" data-reveal>
+          <div><p class="overline">Primera versión funcional</p><h2>Útil hoy.<br />Deliberadamente incompleto.</h2></div>
+          <p>El proyecto prioriza una base comprobable antes que una lista larga de logotipos.</p>
+        </div>
+
+        <div class="roadmap-columns">
+          <div class="roadmap-column done" data-reveal>
+            <span class="roadmap-label">DISPONIBLE</span>
+            <ul><li>Gateway y streaming</li><li>ChatGPT por suscripción</li><li>OpenAI API key y respaldo</li><li>LM Studio</li><li>Gemini, OpenRouter y Zen</li><li>Permisos, límites y estadísticas</li><li>Acceso LAN con TLS</li><li>Tray permanente</li></ul>
+          </div>
+          <div class="roadmap-column next" data-reveal data-delay="1">
+            <span class="roadmap-label">SIGUIENTE</span>
+            <ul><li>Health checks y diagnóstico</li><li>Exportación de estadísticas</li><li>Gráficas de tendencia</li><li>Ollama y embeddings</li><li>Anthropic y formato nativo</li><li>Multimodalidad completa</li><li>Instaladores verificados</li><li>Firma y actualizaciones</li></ul>
+          </div>
+        </div>
+        <a class="text-link" href="https://github.com/miglesiassarria/Nexo/blob/main/ROADMAP.md">Ver el roadmap vivo en GitHub →</a>
+      </section>
+
+      <section class="section faq" id="preguntas">
+        <div class="section-index">10 / PREGUNTAS</div>
+        <div class="section-heading" data-reveal><p class="overline">Antes de conectarlo</p><h2>Lo importante, sin letra pequeña.</h2></div>
+        <div class="faq-list">
+          <details data-reveal><summary>¿Nexo es un servicio en la nube?<span>+</span></summary><p>No. Es una aplicación que ejecutas en tu equipo. Por defecto el gateway solo escucha en <code>127.0.0.1</code> y las estadísticas no salen de la máquina.</p></details>
+          <details data-reveal><summary>¿Puedo usar mi suscripción de ChatGPT?<span>+</span></summary><p>Sí, mediante una vía OAuth validada contra una cuenta real. No es un mecanismo soportado oficialmente, puede cambiar sin aviso y exige aceptar el riesgo y fijar límites por aplicación.</p></details>
+          <details data-reveal><summary>¿La compatibilidad con OpenAI significa que todos los modelos hacen lo mismo?<span>+</span></summary><p>No. Nexo unifica el formato, pero conserva capacidades por modelo. Si una aplicación pide herramientas, visión u otra capacidad no soportada, recibe un error 422 explícito.</p></details>
+          <details data-reveal><summary>¿Qué guarda Nexo de mis conversaciones?<span>+</span></summary><p>Por defecto, metadatos operativos: aplicación, proveedor, modelo, latencia, errores y uso. El contenido de prompts y respuestas no se guarda por defecto.</p></details>
+          <details data-reveal><summary>¿Puedo usarlo desde otro ordenador?<span>+</span></summary><p>Sí, dentro de tu red local y tras activarlo conscientemente. Nexo usa HTTPS con certificado autofirmado y sigue exigiendo el token de aplicación. No configura acceso desde Internet.</p></details>
+          <details data-reveal><summary>¿Funciona ya en Windows y Linux?<span>+</span></summary><p>La arquitectura, los bundles y los iconos están preparados, pero el desarrollo y la validación real se han realizado primero en macOS. Los instaladores de Windows y Linux siguen en el roadmap.</p></details>
+        </div>
+      </section>
+
+      <section class="closing section" data-reveal>
+        <div class="closing-mark"><img src="./nexo-symbol-color.svg" alt="" /></div>
+        <p class="overline">Una puerta. Muchas inteligencias.</p>
+        <h2>Conecta tus herramientas.<br />Conserva el control.</h2>
+        <p>Nexo es software experimental, local y abierto. Lee los riesgos, revisa el código y construye contigo el punto común que necesitas.</p>
+        <div class="hero-actions centered">
+          <a class="button primary" href="https://github.com/miglesiassarria/Nexo">Abrir repositorio</a>
+          <a class="button secondary" href="https://github.com/miglesiassarria/Nexo#compilar-la-aplicación">Compilar Nexo</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-brand"><img src="./nexo-symbol-color.svg" alt="" /><div><b>Nexo</b><small>Gateway local y extensible para modelos de IA.</small></div></div>
+      <div class="footer-links"><a href="#inicio">Inicio</a><a href="https://github.com/miglesiassarria/Nexo">GitHub</a><a href="https://github.com/miglesiassarria/Nexo/blob/main/LICENSE">MIT</a><a href="https://github.com/miglesiassarria/Nexo/issues">Issues</a></div>
+      <p>Proyecto experimental · No afiliado a OpenAI, Google ni otros proveedores.</p>
+    </footer>
+
+    <script type="module" src="./site.js"></script>
+  </body>
+</html>

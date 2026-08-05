@@ -1,7 +1,7 @@
 # ADR 0003: Acceso desde la red local
 
 - **Fecha:** 2026-08-02
-- **Estado:** aceptada, pendiente de implementación
+- **Estado:** aceptada e implementada en la [spec 0007](../../specs/0007-acceso-red-local/spec.md)
 - **Decide:** Manuel Iglesias
 
 ## Contexto
