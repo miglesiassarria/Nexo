@@ -23,8 +23,10 @@ dejar de meter API keys en sus propias herramientas.
   por defecto el contenido de los mensajes.
 - Panel de estadísticas por aplicación, proveedor, credencial, modelo y periodo.
 
-Fuera de la primera versión: Google Gemini, Anthropic, MLX, llama.cpp,
-capacidades multimodales y la superficie compatible con el formato de Anthropic.
+Quedaron fuera del alcance inicial Google Gemini, Anthropic, MLX, llama.cpp,
+las capacidades multimodales y la superficie compatible con el formato de
+Anthropic. Gemini por API key se incorporó posteriormente en la fase 4; el resto
+continúa fuera de la primera versión.
 
 Fuera del proyecto: multiusuario, sincronización entre equipos, acceso remoto
 fuera de la red local y despliegue empresarial. Conectar otros ordenadores de
@@ -95,7 +97,10 @@ Dos spikes de código, no documentos.
       ([spec 0001](specs/0001-proveedor-local-lm-studio/spec.md)).
 - [ ] Ollama, como proveedor propio y no como variante de LM Studio.
 - [ ] `/v1/embeddings`: los modelos ya se listan, pero la superficie no existe.
-- [ ] Google Gemini con OAuth de API y con API key.
+- [x] Google Gemini con API key mediante su capa OpenAI-compatible, verificado
+      contra la API real ([spec 0008](specs/0008-atajo-de-proveedor-gemini-api-key/spec.md)).
+- [ ] Google Gemini con OAuth de API. No se confunde con una suscripción de la
+      aplicación Gemini: autoriza un proyecto de Google Cloud.
 - [ ] Anthropic por API key y, tras su propia investigación, por OAuth de
       suscripción. El flujo de Anthropic no se deriva del de OpenAI.
 - [ ] Superficie compatible con el formato nativo de Anthropic, necesaria para

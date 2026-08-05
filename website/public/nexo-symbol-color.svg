@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Nexo color symbol</title>
+  <path d="M300 764V260h108l208 331V260h108v504H616L408 433v331Z" fill="#071A3D"/>
+  <path d="M168 512h688" fill="none" stroke="#1D4FFF" stroke-width="34" stroke-linecap="round"/>
+  <path d="M512 168v688" fill="none" stroke="#13CBD4" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="168" cy="512" r="58" fill="#1D4FFF"/>
+  <circle cx="856" cy="512" r="58" fill="#1D4FFF"/>
+  <circle cx="512" cy="168" r="58" fill="#13CBD4"/>
+  <circle cx="512" cy="856" r="58" fill="#13CBD4"/>
+  <circle cx="512" cy="512" r="78" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="54" fill="#1D4FFF"/>
+</svg>

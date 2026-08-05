@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "preview": "vite preview",
+    "site:dev": "vite --config website/site.config.ts",
+    "site:build": "vite build --config website/site.config.ts",
+    "site:preview": "vite preview --config website/site.config.ts",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
     "app:install": "bash scripts/install-macos.sh"
