@@ -24,14 +24,15 @@
   - Verificación: servidor local, recorrido de escritorio y móvil, enlaces internos, botones de copia, consola y captura visual
   - Evidencia: viewport 1280 y 390 px sin overflow; menú móvil y pestañas probados; imágenes completas y consola sin avisos ni errores
 
-- [ ] **T6. Publicar y comprobar la URL real.**
+- [x] **T6. Publicar y comprobar la URL real.**
   - Ficheros: configuración GitHub Pages y ejecución Actions
   - Verificación: CI verde, merge squash, workflow de Pages verde, API de Pages y HTTP 200 de página y recursos
+  - Evidencia: PR 13 fusionado; ejecución 30999001529 correcta; Pages habilitado con HTTPS; HTML, CSS, JavaScript y SVG responden HTTP 200
 
 ## Cierre
 
 - [x] Verificación del repositorio: `cargo test --workspace && cargo clippy --workspace --all-targets && npm run check && npm run site:build`
 - [x] Aplicación de macOS compilada **e instalada**: `npm run app:install`; compilada e instalada el 2026-08-05 a las 12:46:51 CEST
-- [ ] Criterios de aceptación de `spec.md` repasados uno por uno, con su resultado real
-- [ ] Documentación actualizada si lo aprendido contradice lo escrito
-- [ ] `specs/README.md` actualizado
+- [x] Criterios de aceptación de `spec.md` repasados uno por uno, con resultado correcto en los ocho criterios
+- [x] Documentación actualizada si lo aprendido contradice lo escrito
+- [x] `specs/README.md` actualizado
