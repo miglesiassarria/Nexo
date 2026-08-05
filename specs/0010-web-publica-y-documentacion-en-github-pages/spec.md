@@ -1,6 +1,6 @@
 # 0010 · Web pública y documentación en GitHub Pages
 
-- **Estado:** tasks
+- **Estado:** hecho
 - **Creada:** 2026-08-05
 - **Pedida por:** el usuario: «incorpórala y déjalo ya todo subido a GitHub para que se pueda ver ahí»
 - **Aprobación:** explícita en el mismo mensaje, después de revisar y aceptar el alcance propuesto en la auditoría previa
