@@ -234,6 +234,7 @@ pub struct ChunkBuilder {
     pub model: String,
     created: i64,
     tool_index: HashMapIndex,
+    tool_arguments_seen: std::collections::HashSet<String>,
 }
 
 type HashMapIndex = std::collections::HashMap<String, usize>;
@@ -245,6 +246,7 @@ impl ChunkBuilder {
             model: model.into(),
             created: util::now_ms() / 1000,
             tool_index: HashMapIndex::new(),
+            tool_arguments_seen: std::collections::HashSet::new(),
         }
     }
 
@@ -289,6 +291,7 @@ impl ChunkBuilder {
     }
 
     pub fn tool_args_chunk(&mut self, id: &str, args: &str) -> Value {
+        self.tool_arguments_seen.insert(id.to_string());
         let next = self.tool_index.len();
         let index = *self.tool_index.entry(id.to_string()).or_insert(next);
         self.envelope(
@@ -298,6 +301,16 @@ impl ChunkBuilder {
             }]}),
             None,
         )
+    }
+
+    /// Algunos servidores Responses sólo incluyen los argumentos completos en
+    /// `response.output_item.done`. Si ya llegaron deltas, no se vuelven a
+    /// emitir para evitar concatenarlos dos veces en clientes streaming.
+    pub fn tool_final_args_chunk(&mut self, id: &str, args: &str) -> Option<Value> {
+        if self.tool_arguments_seen.contains(id) {
+            return None;
+        }
+        Some(self.tool_args_chunk(id, args))
     }
 
     pub fn finish_chunk(&self, reason: FinishReason) -> Value {
@@ -611,6 +624,20 @@ mod tests {
         assert_eq!(b.tool_start_chunk("a", "t1")["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
         assert_eq!(b.tool_start_chunk("b", "t2")["choices"][0]["delta"]["tool_calls"][0]["index"], 1);
         assert_eq!(b.tool_args_chunk("a", "{}")["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
+    }
+
+    #[test]
+    fn final_tool_arguments_only_fill_missing_stream_deltas() {
+        let mut without_deltas = ChunkBuilder::new("m");
+        assert!(without_deltas
+            .tool_final_args_chunk("call_1", "{\"path\":\"a\"}")
+            .is_some());
+
+        let mut with_deltas = ChunkBuilder::new("m");
+        with_deltas.tool_args_chunk("call_1", "{\"path\":");
+        assert!(with_deltas
+            .tool_final_args_chunk("call_1", "{\"path\":\"a\"}")
+            .is_none());
     }
 
     #[test]

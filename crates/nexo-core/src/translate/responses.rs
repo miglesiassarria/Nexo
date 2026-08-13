@@ -57,9 +57,9 @@ pub fn build_request(req: &ChatRequest) -> Value {
     if let Some(effort) = req.reasoning {
         body.insert("reasoning".into(), json!({"effort": effort.as_str()}));
     }
-    if let Some(max) = req.max_output_tokens {
-        body.insert("max_output_tokens".into(), json!(max));
-    }
+    // El backend de la suscripción rechaza `max_output_tokens`, aunque sea un
+    // campo válido en Responses públicas. Nexo conserva el límite para otras
+    // vías, pero aquí debe omitirse y dejar que el proveedor aplique el suyo.
     if req.json_mode {
         body.insert("text".into(), json!({"format": {"type": "json_object"}}));
     }
@@ -202,7 +202,7 @@ pub fn translate_event(event_name: &str, data: &Value) -> Translated {
             }
         }
 
-        "response.function_call_arguments.done" | "response.output_item.done" => {
+        "response.function_call_arguments.done" => {
             let id = data
                 .get("item_id")
                 .and_then(|v| v.as_str())
@@ -211,6 +211,28 @@ pub fn translate_event(event_name: &str, data: &Value) -> Translated {
             match id {
                 Some(id) if !id.is_empty() => {
                     Translated::Events(vec![ChatEvent::ToolCallEnd { id }])
+                }
+                _ => Translated::Ignored,
+            }
+        }
+
+        "response.output_item.done" => {
+            let item = data.get("item");
+            let id = call_id(item);
+            match id {
+                Some(id) if !id.is_empty() => {
+                    let mut events = Vec::new();
+                    if let Some(arguments) = item
+                        .and_then(|value| value.get("arguments"))
+                        .and_then(|value| value.as_str())
+                    {
+                        events.push(ChatEvent::ToolCallArgumentsDone {
+                            id: id.clone(),
+                            args_json: arguments.to_string(),
+                        });
+                    }
+                    events.push(ChatEvent::ToolCallEnd { id });
+                    Translated::Events(events)
                 }
                 _ => Translated::Ignored,
             }
@@ -446,7 +468,7 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "buscar");
         assert_eq!(body["tool_choice"]["name"], "buscar");
         assert_eq!(body["reasoning"]["effort"], "high");
-        assert_eq!(body["max_output_tokens"], 1024);
+        assert!(body.get("max_output_tokens").is_none());
     }
 
     #[test]
@@ -531,6 +553,25 @@ mod tests {
             json!({"item_id": "call_1"}),
         );
         assert!(matches!(end[0], ChatEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn output_item_done_preserves_complete_tool_arguments() {
+        let events = events(
+            "response.output_item.done",
+            json!({"item": {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": "{\"path\":\"result.txt\",\"content\":\"ok\"}"
+            }}),
+        );
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ChatEvent::ToolCallArgumentsDone { id, args_json }
+                if id == "call_1" && args_json == "{\"path\":\"result.txt\",\"content\":\"ok\"}"
+        )));
     }
 
     #[test]
