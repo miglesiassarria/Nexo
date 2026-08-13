@@ -225,6 +225,11 @@ fn stream_response(
                         ChatEvent::ToolCallDelta { id, args_json } => {
                             out.push(sse(builder.tool_args_chunk(id, args_json)))
                         }
+                        ChatEvent::ToolCallArgumentsDone { id, args_json } => {
+                            if let Some(chunk) = builder.tool_final_args_chunk(id, args_json) {
+                                out.push(sse(chunk));
+                            }
+                        }
                         ChatEvent::Finished { reason } => {
                             out.push(sse(builder.finish_chunk(*reason)))
                         }
@@ -289,6 +294,11 @@ async fn collect_response(
                     ChatEvent::ToolCallDelta { id, args_json } => {
                         if let Some(c) = calls.iter_mut().find(|c| c.id == id) {
                             c.arguments_json.push_str(&args_json);
+                        }
+                    }
+                    ChatEvent::ToolCallArgumentsDone { id, args_json } => {
+                        if let Some(c) = calls.iter_mut().find(|c| c.id == id) {
+                            c.arguments_json = args_json;
                         }
                     }
                     _ => {}

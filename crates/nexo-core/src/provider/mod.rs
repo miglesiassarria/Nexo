@@ -317,6 +317,9 @@ pub enum ChatEvent {
     ReasoningDelta { text: String },
     ToolCallStart { id: String, name: String },
     ToolCallDelta { id: String, args_json: String },
+    /// Argumentos completos comunicados al cerrar el item. Sustituyen los
+    /// deltas acumulados y cubren proveedores que no emiten deltas.
+    ToolCallArgumentsDone { id: String, args_json: String },
     ToolCallEnd { id: String },
     /// Puede no llegar nunca: en las rutas de suscripción no llega.
     Usage(UsageReport),
