@@ -333,6 +333,8 @@ export const api = {
     invoke<IssuedApp>("create_app", { name, notes }),
   revokeApp: (appId: string) => invoke<void>("revoke_app", { appId }),
   deleteApp: (appId: string) => invoke<void>("delete_app", { appId }),
+  /** `null` si esta aplicación no tiene token recuperable (anterior a la spec 0011, o revocada). */
+  appTokenSecret: (appId: string) => invoke<string | null>("app_token_secret", { appId }),
   appDetail: (appId: string) => invoke<AppDetail>("app_detail", { appId }),
   grantableRoutes: () => invoke<GrantableRoute[]>("grantable_routes"),
   appRouteModels: (args: { appId: string; providerId: string; credentialKind: string }) =>

@@ -53,6 +53,7 @@ fn main() {
             commands::list_apps,
             commands::create_app,
             commands::revoke_app,
+            commands::app_token_secret,
             commands::delete_app,
             commands::app_detail,
             commands::grantable_routes,
