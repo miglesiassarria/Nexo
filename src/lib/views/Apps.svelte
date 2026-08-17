@@ -14,7 +14,12 @@
     NEXO_REASONING_LEVELS,
   } from "../api";
 
-  let { onchange }: { onchange: () => void } = $props();
+  /**
+   * `baseUrl` llega del estado del gateway en lugar de estar escrito aquí: el
+   * puerto es configurable, y tenerlo fijo hacía que esta pantalla anunciara
+   * un URL que podía no existir.
+   */
+  let { onchange, baseUrl }: { onchange: () => void; baseUrl: string | null } = $props();
 
   /**
    * Vías concedibles. Se piden al núcleo, que las deriva del catálogo: llevarlas
@@ -319,9 +324,9 @@
     <div class="card token-card stack">
       <h2>Token de «{issued.app.name}»</h2>
       <p class="muted">
-        Cópialo ahora. Nexo guarda solo su hash: no puede volver a mostrártelo.
         En tu herramienta va en el campo de clave API, con la URL base
-        <code>http://127.0.0.1:8787/v1</code>.
+        <code>{baseUrl ?? "http://127.0.0.1:8787/v1"}</code>. Si lo pierdes, puedes
+        volver a copiarlo desde la lista de abajo.
       </p>
       <div class="row">
         <code class="token">{issued.token}</code>

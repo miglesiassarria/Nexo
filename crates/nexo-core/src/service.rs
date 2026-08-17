@@ -176,6 +176,14 @@ impl Nexo {
     /// el plan cae a `127.0.0.1` sin TLS — nunca a `0.0.0.0` sin TLS — y
     /// deja el motivo en `bind_error()`, reutilizando el mismo canal que ya
     /// existe para «el puerto está ocupado».
+    ///
+    /// Con `allow_lan` activo el plan tiene **dos** direcciones, no una: el
+    /// listener TLS en `0.0.0.0` para la red, y además HTTP plano en
+    /// `127.0.0.1` para los clientes de esta misma máquina. Antes solo había
+    /// el primero, y activar la red local rompía en silencio a todos los
+    /// clientes locales ya configurados: el panel seguía anunciando
+    /// `http://127.0.0.1:<puerto>/v1` y ese URL había dejado de existir.
+    /// Ver `Nexo::base_url` y la invariante 2 de `CLAUDE.md`.
     pub fn prepare_gateway_bind(
         &self,
         settings: &Settings,
@@ -186,6 +194,7 @@ impl Nexo {
             return GatewayBindPlan {
                 addr: settings.bind_addr(),
                 tls: None,
+                loopback_addr: None,
             };
         }
 
@@ -196,10 +205,15 @@ impl Nexo {
                     port: settings.port,
                     cert_fingerprint_sha256: cert.fingerprint_sha256.clone(),
                     cert_path: cert.cert_path.display().to_string(),
+                    cert_rotated: cert.rotated,
                 }));
                 GatewayBindPlan {
                     addr: settings.bind_addr(),
                     tls: Some(cert),
+                    loopback_addr: Some(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        settings.port,
+                    ))),
                 }
             }
             Err(e) => {
@@ -211,6 +225,7 @@ impl Nexo {
                 GatewayBindPlan {
                     addr: std::net::SocketAddr::from(([127, 0, 0, 1], settings.port)),
                     tls: None,
+                    loopback_addr: None,
                 }
             }
         }
@@ -2017,6 +2032,10 @@ pub struct LanAccessInfo {
     pub port: u16,
     pub cert_fingerprint_sha256: String,
     pub cert_path: String,
+    /// El certificado se rehizo en este arranque porque el guardado no cubría
+    /// la dirección de red actual. La huella ha cambiado: los equipos que ya
+    /// lo habían aceptado tienen que volver a aceptarlo.
+    pub cert_rotated: bool,
 }
 
 /// Qué dirección usar y, si hace falta, con qué certificado. Ver
@@ -2024,6 +2043,12 @@ pub struct LanAccessInfo {
 pub struct GatewayBindPlan {
     pub addr: std::net::SocketAddr,
     pub tls: Option<crate::tls_cert::LanCertificate>,
+    /// Dirección adicional para servir HTTP plano solo en loopback, cuando
+    /// `addr` es el listener TLS de la red local. El sistema entrega cada
+    /// conexión al socket más específico, así que los dos pueden compartir
+    /// puerto: lo que llega a `127.0.0.1` lo atiende este, y lo que llega
+    /// por la red, el de `0.0.0.0`.
+    pub loopback_addr: Option<std::net::SocketAddr>,
 }
 
 #[cfg(test)]
@@ -3213,6 +3238,10 @@ mod tests {
 
         assert_eq!(plan.addr.ip().to_string(), "127.0.0.1");
         assert!(plan.tls.is_none());
+        assert!(
+            plan.loopback_addr.is_none(),
+            "en modo local `addr` ya es loopback: un segundo listener sobraría"
+        );
         assert!(n.lan_info().is_none());
         assert!(
             !dir.join("tls").exists(),
@@ -3235,6 +3264,34 @@ mod tests {
         assert_eq!(info.port, 9191);
         assert!(!info.cert_fingerprint_sha256.is_empty());
         assert!(n.bind_error().is_none());
+    }
+
+    /// El fallo que rompió al usuario: al activar la red local, el gateway
+    /// pasaba a servir **solo** HTTPS en `0.0.0.0`, y todas las aplicaciones
+    /// de esta misma máquina —configuradas con `http://127.0.0.1:<puerto>/v1`,
+    /// que es justo el URL que el panel sigue anunciando en `base_url`— se
+    /// quedaban sin nada que responder.
+    #[test]
+    fn lan_mode_also_plans_a_plain_loopback_bind_for_local_clients() {
+        let n = nexo();
+        let settings = Settings { allow_lan: true, port: 9292, ..Default::default() };
+        n.db().save_settings(&settings).unwrap();
+        let dir = temp_data_dir("loopback-tambien");
+
+        let plan = n.prepare_gateway_bind(&settings, &dir);
+
+        let loopback = plan
+            .loopback_addr
+            .expect("el modo red debe seguir sirviendo en loopback sin TLS");
+        assert_eq!(loopback.ip().to_string(), "127.0.0.1");
+        assert_eq!(
+            loopback.port(), settings.port,
+            "mismo puerto que anuncia `base_url`, no otro"
+        );
+        assert!(
+            n.status(&settings).unwrap().base_url.starts_with("http://127.0.0.1:9292"),
+            "el panel no debe anunciar un URL que no existe"
+        );
     }
 
     #[test]

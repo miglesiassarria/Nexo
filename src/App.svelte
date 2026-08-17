@@ -121,7 +121,7 @@
     {:else if tab === "providers"}
       <Providers onchange={refresh} />
     {:else if tab === "apps"}
-      <Apps onchange={refresh} />
+      <Apps onchange={refresh} baseUrl={status?.base_url ?? null} />
     {:else if tab === "models"}
       <Models />
     {:else}

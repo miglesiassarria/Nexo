@@ -125,12 +125,24 @@
               >.
             </p>
             <p class="small">
+              Las aplicaciones de este mismo ordenador siguen usando
+              <code>{status.base_url}</code>, sin certificado ni cambio ninguno.
+            </p>
+            <p class="small">
               Certificado autofirmado: la primera vez, ese equipo mostrará un aviso de
               "no confiable" que hay que aceptar a mano. Para comprobar que es el
               correcto antes de aceptarlo, compara su huella SHA-256 —
               <code>{status.lan.cert_fingerprint_sha256}</code>
               — con la del fichero <code>{status.lan.cert_path}</code>.
             </p>
+            {#if status.lan.cert_rotated}
+              <p class="small">
+                <strong>El certificado se ha rehecho en este arranque</strong> porque el
+                anterior no cubría la dirección de red actual — normalmente, porque este
+                ordenador cambió de red. Su huella es nueva: los equipos que ya lo habían
+                aceptado tienen que volver a aceptarlo.
+              </p>
+            {/if}
           </div>
         {:else}
           <p class="muted small">
