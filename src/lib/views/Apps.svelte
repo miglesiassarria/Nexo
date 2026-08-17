@@ -35,8 +35,10 @@
   let openRoute = $state<string | null>(null);
   let filter = $state("");
   let saving = $state(false);
-  /** Id de la aplicación cuyo prefijo se acaba de copiar, para el aviso breve. */
+  /** Id de la aplicación cuya clave se acaba de copiar, para el aviso breve. */
   let copiedPrefixFor = $state<string | null>(null);
+  /** Si lo copiado fue la clave completa o solo el prefijo (spec 0011). */
+  let copiedKind = $state<"full" | "prefix-only">("full");
 
   const routeKey = (provider: string, kind: string) => `${provider}|${kind}`;
 
@@ -279,16 +281,30 @@
   }
 
   /**
-   * Copia el PREFIJO del token, no la clave completa: Nexo solo guarda su hash
-   * (invariante de seguridad) y no puede volver a mostrarla tras la emisión.
-   * Sirve para identificar la aplicación al buscarla, no para autenticar.
+   * Copia la clave. La pregunta se hace al hacer clic, no antes (D3 de la
+   * spec 0011): la lista no sabe de antemano si esta aplicación tiene un
+   * token recuperable en el almacén seguro, así que no hay ningún indicio
+   * visual previo — solo el resultado tras pulsar, distinto en cada caso
+   * para que no se descubra la diferencia solo al pegarla y que falle.
+   *
+   * Solo se llama para aplicaciones ACTIVAS: una revocada no ofrece ni
+   * siquiera el botón (D4) — no tiene sentido preguntar por un secreto que ya
+   * se borró a propósito al revocar.
    */
-  async function copyPrefix(app: App) {
-    await navigator.clipboard.writeText(app.token_prefix);
-    copiedPrefixFor = app.id;
+  async function copyKey(app: App) {
+    const full = await api.appTokenSecret(app.id);
+    if (full !== null) {
+      await navigator.clipboard.writeText(full);
+      copiedPrefixFor = app.id;
+      copiedKind = "full";
+    } else {
+      await navigator.clipboard.writeText(app.token_prefix);
+      copiedPrefixFor = app.id;
+      copiedKind = "prefix-only";
+    }
     setTimeout(() => {
       if (copiedPrefixFor === app.id) copiedPrefixFor = null;
-    }, 1500);
+    }, 2500);
   }
 
   $effect(() => {
@@ -338,17 +354,26 @@
             <strong>{app.name}</strong>
             {#if app.revoked_at}
               <span class="badge err">Revocada</span>
+              <!--
+                Sin botón a propósito (D4 de la spec 0011): un token revocado
+                no autentica, así que no se ofrece como copiable ni el
+                prefijo con apariencia de acción — sería una clave que
+                parece servir y no sirve.
+              -->
+              <code>{app.token_prefix}…</code>
             {:else}
               <span class="badge ok">Activa</span>
+              <button
+                class="ghost copy-prefix"
+                onclick={() => copyKey(app)}
+                title="Copia la clave completa al portapapeles"
+              >
+                <code>{app.token_prefix}…</code>
+                {#if copiedPrefixFor === app.id}
+                  {copiedKind === "full" ? "✓ clave copiada" : "✓ solo prefijo (clave no recuperable)"}
+                {/if}
+              </button>
             {/if}
-            <button
-              class="ghost copy-prefix"
-              onclick={() => copyPrefix(app)}
-              title="Copia el prefijo del token (no es la clave completa: Nexo no puede volver a mostrarla)"
-            >
-              <code>{app.token_prefix}…</code>
-              {copiedPrefixFor === app.id ? "✓ copiado" : ""}
-            </button>
             {#each distinctRoutes(details[app.id]?.grants ?? []) as g (g.provider_id + g.credential_kind)}
               <span
                 class="badge"

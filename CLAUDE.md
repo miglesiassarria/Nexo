@@ -84,9 +84,13 @@ repositorio de la descrita aquí: eso sigue pidiéndose en el chat.
 No se negocian dentro de una especificación. Cambiarlas exige un ADR nuevo que lo
 haga explícito.
 
-1. **Ningún secreto en SQLite.** Ni API keys, ni access tokens, ni refresh tokens.
-   Van al almacén seguro del sistema; en la base de datos solo la referencia. Los
-   tokens de aplicación se guardan hasheados.
+1. **Ningún secreto en SQLite.** Ni API keys, ni access tokens, ni refresh
+   tokens, ni tokens de aplicación. Van al almacén seguro del sistema; en la
+   base de datos solo la referencia y, en el caso de los tokens de
+   aplicación, también su hash para autenticar sin tocar el almacén seguro en
+   cada petición. Ver [ADR 0004](docs/adr/0004-tokens-de-aplicacion-recuperables.md):
+   el usuario aceptó explícitamente que esto iguala el riesgo de un token de
+   aplicación al de una API key de proveedor, a cambio de poder recuperarlo.
 
 2. **Nunca degradar en silencio.** Si el destino no soporta una capacidad
    solicitada, error `422` explícito que nombra la capacidad. Jamás eliminarla de

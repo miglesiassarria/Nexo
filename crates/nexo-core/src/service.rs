@@ -689,7 +689,18 @@ impl Nexo {
     /// nueva. Los modelos se marcan después, en los permisos de la aplicación
     /// (spec 0004).
     pub fn create_app(&self, name: &str, notes: Option<&str>) -> Result<IssuedApp> {
-        self.db.create_app(name, notes)
+        let issued = self.db.create_app(name, notes)?;
+
+        // Recuperable, no crítico (ADR 0004): si el almacén seguro falla al
+        // escribir, la aplicación sigue siendo utilizable igual — el hash ya
+        // guardado en SQLite es lo que de verdad autentica. Solo se pierde la
+        // posibilidad de volver a copiar la clave más tarde, el mismo estado
+        // en el que quedaba cualquier aplicación antes de este cambio.
+        if let Err(e) = self.secrets.set(&SecretRef::app_token(&issued.app.id), &issued.token) {
+            tracing::warn!(error = %e, app_id = %issued.app.id, "no se pudo guardar el token recuperable");
+        }
+
+        Ok(issued)
     }
 
     /// Desconecta una cuenta y elimina sus secretos del equipo.
@@ -705,6 +716,40 @@ impl Nexo {
         }
         self.db.delete_account(account_id)?;
         Ok(())
+    }
+
+    /// Revoca una aplicación. El token deja de autenticar de inmediato, y no
+    /// tiene sentido seguir ofreciéndolo como copiable: se borra también del
+    /// almacén seguro (ADR 0004).
+    pub fn revoke_app(&self, app_id: &str) -> Result<()> {
+        self.db.revoke_app(app_id)?;
+        self.forget_app_secret(app_id);
+        Ok(())
+    }
+
+    /// Borra una aplicación y todo lo que dependa de ella (permisos, límites:
+    /// `ON DELETE CASCADE` en el esquema), y su copia del almacén seguro.
+    pub fn delete_app(&self, app_id: &str) -> Result<()> {
+        self.db.delete_app(app_id)?;
+        self.forget_app_secret(app_id);
+        Ok(())
+    }
+
+    /// El token en claro guardado para esta aplicación, si lo hay. `None` si
+    /// se creó antes del ADR 0004, si ya se revocó o borró, o si el almacén
+    /// seguro no tiene nada bajo esa clave por cualquier otro motivo.
+    pub fn app_token_secret(&self, app_id: &str) -> Result<Option<String>> {
+        self.secrets.get(&SecretRef::app_token(app_id))
+    }
+
+    /// No aborta si falla: la aplicación ya está revocada o borrada en SQLite,
+    /// que es lo que de verdad importa. Un secreto huérfano en el almacén
+    /// seguro es basura inerte, no un fallo de seguridad — nada vuelve a
+    /// pedirlo una vez que el `app_id` ya no existe o está revocado.
+    fn forget_app_secret(&self, app_id: &str) {
+        if let Err(e) = self.secrets.delete(&SecretRef::app_token(app_id)) {
+            tracing::warn!(error = %e, app_id, "no se pudo borrar el token del almacén seguro");
+        }
     }
 
     /// Resuelve la credencial de una cuenta, renovando si hace falta.
@@ -3215,5 +3260,77 @@ mod tests {
             n.bind_error().is_some(),
             "el fallo debe quedar visible, no en silencio"
         );
+    }
+
+    // -- Spec 0011: token de aplicación recuperable -------------------------
+
+    /// Igual que `nexo()`, pero conserva el `MemorySecretStore` accesible para
+    /// poder inspeccionarlo directamente en la prueba, no solo a través de
+    /// `Nexo`.
+    fn nexo_with_secrets() -> (Arc<Nexo>, Arc<MemorySecretStore>) {
+        let secrets = Arc::new(MemorySecretStore::default());
+        let nexo = Nexo::new(Db::open_in_memory().unwrap(), secrets.clone()).unwrap();
+        (nexo, secrets)
+    }
+
+    #[test]
+    fn create_app_stores_the_token_in_the_secret_store() {
+        let (n, secrets) = nexo_with_secrets();
+        let issued = n.create_app("cliente", None).unwrap();
+
+        let stored = secrets
+            .get(&crate::secrets::SecretRef::app_token(&issued.app.id))
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(issued.token.as_str()),
+            "el secreto guardado debe ser exactamente el token que se mostró al crear"
+        );
+    }
+
+    #[test]
+    fn revoking_an_app_deletes_its_secret() {
+        let (n, secrets) = nexo_with_secrets();
+        let issued = n.create_app("cliente", None).unwrap();
+        let key = crate::secrets::SecretRef::app_token(&issued.app.id);
+        assert!(secrets.get(&key).unwrap().is_some(), "precondición: el secreto existe");
+
+        n.revoke_app(&issued.app.id).unwrap();
+
+        assert!(
+            secrets.get(&key).unwrap().is_none(),
+            "un token revocado no debe seguir siendo copiable"
+        );
+    }
+
+    #[test]
+    fn deleting_an_app_deletes_its_secret() {
+        let (n, secrets) = nexo_with_secrets();
+        let issued = n.create_app("cliente", None).unwrap();
+        let key = crate::secrets::SecretRef::app_token(&issued.app.id);
+        assert!(secrets.get(&key).unwrap().is_some(), "precondición: el secreto existe");
+
+        n.delete_app(&issued.app.id).unwrap();
+
+        assert!(secrets.get(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn app_token_secret_returns_the_stored_token() {
+        let (n, _secrets) = nexo_with_secrets();
+        let issued = n.create_app("cliente", None).unwrap();
+
+        let secret = n.app_token_secret(&issued.app.id).unwrap();
+
+        assert_eq!(secret.as_deref(), Some(issued.token.as_str()));
+    }
+
+    #[test]
+    fn app_token_secret_returns_none_when_there_is_nothing_stored() {
+        let (n, _secrets) = nexo_with_secrets();
+        // Simula una aplicación anterior a esta especificación (o ya
+        // revocada): su id nunca tuvo, o ya no tiene, entrada en el almacén.
+        let secret = n.app_token_secret("app_no-existe").unwrap();
+        assert_eq!(secret, None);
     }
 }

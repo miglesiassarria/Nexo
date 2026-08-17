@@ -17,6 +17,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0008](0008-atajo-de-proveedor-gemini-api-key/spec.md) | Atajo de proveedor: Gemini (API key) | `hecho` | Verificado con clave real. Dos arreglos reales encontrados al construir: id de modelo con prefijo `models/` no reconocido por `models.dev`, y el sobre de error de Gemini (`google.rpc.Status`, a veces en array) no lo reconocía el clasificador compartido |
 | [0009](0009-esfuerzo-de-razonamiento-por-aplicacion-y-modelo/spec.md) | Esfuerzo de razonamiento por aplicación y modelo | `build` | Primer valor por modelo en `app_grants`; arregla que `grant_for` elegía la primera fila coincidente y no la más específica. Falta comprobar el selector con el catálogo real de suscripción: hoy guarda el manifiesto, sin niveles |
 | [0010](0010-web-publica-y-documentacion-en-github-pages/spec.md) | Web pública y documentación en GitHub Pages | `hecho` | Publicada con HTTPS; build, QA responsive, CI, instalación macOS y recursos HTTP verificados |
+| [0011](0011-token-de-aplicacion-recuperable/spec.md) | Token de aplicación recuperable | `build` | Requiere [ADR 0004](../docs/adr/0004-tokens-de-aplicacion-recuperables.md); `revoke_app`/`delete_app` no pasaban por `Nexo`, hoy no podrían limpiar el almacén seguro |
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

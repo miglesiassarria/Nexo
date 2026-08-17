@@ -248,12 +248,20 @@ pub fn create_app(
 
 #[tauri::command]
 pub fn revoke_app(state: State<'_, AppState>, app_id: String) -> CmdResult<()> {
-    state.nexo.db().revoke_app(&app_id).map_err(map_err)
+    state.nexo.revoke_app(&app_id).map_err(map_err)
 }
 
 #[tauri::command]
 pub fn delete_app(state: State<'_, AppState>, app_id: String) -> CmdResult<()> {
-    state.nexo.db().delete_app(&app_id).map_err(map_err)
+    state.nexo.delete_app(&app_id).map_err(map_err)
+}
+
+/// El token en claro de una aplicación, si el almacén seguro lo tiene
+/// (spec 0011). `None` en una aplicación anterior a este cambio o ya
+/// revocada — la interfaz debe copiar el prefijo en ese caso, no fallar.
+#[tauri::command]
+pub fn app_token_secret(state: State<'_, AppState>, app_id: String) -> CmdResult<Option<String>> {
+    state.nexo.app_token_secret(&app_id).map_err(map_err)
 }
 
 /// Vías a las que se puede conceder acceso, derivadas del catálogo.
