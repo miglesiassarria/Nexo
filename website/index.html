@@ -278,7 +278,7 @@
           </article>
           <article class="step" data-reveal>
             <span class="step-no">03</span>
-            <div><h3>Crea una aplicación</h3><p>Recibirás un token <code>nx_…</code> una sola vez. Nexo guarda únicamente su hash.</p></div>
+            <div><h3>Crea una aplicación</h3><p>Recibirás un token <code>nx_…</code>. Si lo pierdes, puedes volver a copiarlo: vive en el almacén seguro del sistema, no en la base de datos.</p></div>
           </article>
           <article class="step" data-reveal>
             <span class="step-no">04</span>
@@ -392,9 +392,9 @@
             </div>
             <div><span class="security-kicker">ALMACÉN SEGURO DEL SISTEMA</span><h3>API keys y tokens OAuth nunca entran en SQLite.</h3><p>Keychain en macOS; almacenes equivalentes del sistema en las plataformas previstas.</p></div>
           </article>
-          <article data-reveal><span class="mini-icon">#</span><h3>Tokens hasheados</h3><p>El token de una aplicación solo se muestra al emitirlo.</p></article>
+          <article data-reveal><span class="mini-icon">#</span><h3>Tokens recuperables</h3><p>En SQLite solo está su hash; el token vive en el almacén seguro para poder volver a copiarlo.</p></article>
           <article data-reveal><span class="mini-icon">○</span><h3>Sin contenido por defecto</h3><p>Prompts y respuestas no forman parte del registro normal.</p></article>
-          <article data-reveal><span class="mini-icon">⌂</span><h3>Solo localhost</h3><p>La red local se activa expresamente y siempre con token y TLS.</p></article>
+          <article data-reveal><span class="mini-icon">⌂</span><h3>Solo localhost</h3><p>La red local se activa expresamente, exige token y no va cifrada.</p></article>
           <article data-reveal><span class="mini-icon">↺</span><h3>Retención controlable</h3><p>Borra detalle sin perder necesariamente el histórico agregado.</p></article>
         </div>
 
@@ -402,10 +402,19 @@
           <div><span class="lan-tag">OPCIONAL</span><h3>Usar Nexo desde tu red local</h3><p>Una instancia puede atender tus otros equipos sin convertirse en servicio de Internet.</p></div>
           <ol>
             <li><span>1</span>Activa “mi red local” y confirma el riesgo.</li>
-            <li><span>2</span>Reinicia: Nexo escucha en HTTPS con certificado propio.</li>
-            <li><span>3</span>Acepta la huella mostrada en cada cliente.</li>
+            <li><span>2</span>Reinicia: Nexo escucha en todas tus interfaces, y el panel las lista.</li>
+            <li><span>3</span>Apunta el otro equipo a <code>http://…:8787/v1</code>. No hay certificado que aceptar.</li>
             <li><span>4</span>Usa el mismo token por aplicación. Sin token: 401.</li>
           </ol>
+          <div class="lan-warning">
+            <b>El tráfico no va cifrado.</b> El token de aplicación viaja en claro en cada petición,
+            y con él el contenido de las conversaciones: cualquier equipo de la misma red puede
+            leerlo. Es una decisión consciente —el certificado autofirmado anterior quedaba atado
+            a la IP de la máquina, así que en un portátil había que volver a aceptarlo en cada
+            cliente cada vez que cambiaba de red— y está documentada, con su alternativa, en el
+            <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/adr/0005-red-local-sin-cifrado.md">ADR 0005</a>.
+            Desactívalo antes de conectarte a una red que no controles.
+          </div>
           <div class="lan-boundary"><b>No incluye</b> Internet, UPnP, túneles, multiusuario ni despliegue empresarial.</div>
         </div>
       </section>
@@ -447,7 +456,7 @@
         <div class="roadmap-columns">
           <div class="roadmap-column done" data-reveal>
             <span class="roadmap-label">DISPONIBLE</span>
-            <ul><li>Gateway y streaming</li><li>ChatGPT por suscripción</li><li>OpenAI API key y respaldo</li><li>LM Studio</li><li>Gemini, OpenRouter y Zen</li><li>Permisos, límites y estadísticas</li><li>Acceso LAN con TLS</li><li>Tray permanente</li></ul>
+            <ul><li>Gateway y streaming</li><li>ChatGPT por suscripción</li><li>OpenAI API key y respaldo</li><li>LM Studio</li><li>Gemini, OpenRouter y Zen</li><li>Permisos, límites y estadísticas</li><li>Esfuerzo de razonamiento por aplicación y modelo</li><li>Acceso LAN, sin cifrar</li><li>Tray permanente</li></ul>
           </div>
           <div class="roadmap-column next" data-reveal data-delay="1">
             <span class="roadmap-label">SIGUIENTE</span>
@@ -465,7 +474,7 @@
           <details data-reveal><summary>¿Puedo usar mi suscripción de ChatGPT?<span>+</span></summary><p>Sí, mediante una vía OAuth validada contra una cuenta real. No es un mecanismo soportado oficialmente, puede cambiar sin aviso y exige aceptar el riesgo y fijar límites por aplicación.</p></details>
           <details data-reveal><summary>¿La compatibilidad con OpenAI significa que todos los modelos hacen lo mismo?<span>+</span></summary><p>No. Nexo unifica el formato, pero conserva capacidades por modelo. Si una aplicación pide herramientas, visión u otra capacidad no soportada, recibe un error 422 explícito.</p></details>
           <details data-reveal><summary>¿Qué guarda Nexo de mis conversaciones?<span>+</span></summary><p>Por defecto, metadatos operativos: aplicación, proveedor, modelo, latencia, errores y uso. El contenido de prompts y respuestas no se guarda por defecto.</p></details>
-          <details data-reveal><summary>¿Puedo usarlo desde otro ordenador?<span>+</span></summary><p>Sí, dentro de tu red local y tras activarlo conscientemente. Nexo usa HTTPS con certificado autofirmado y sigue exigiendo el token de aplicación. No configura acceso desde Internet.</p></details>
+          <details data-reveal><summary>¿Puedo usarlo desde otro ordenador?<span>+</span></summary><p>Sí, dentro de tu red local y tras activarlo conscientemente. El otro equipo no tiene que aceptar ningún certificado: se conecta por HTTP y sigue necesitando el token de aplicación. La contrapartida es que el tráfico no va cifrado, así que el token es legible para quien esté en la misma red — la decisión y su alternativa están en el <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/adr/0005-red-local-sin-cifrado.md">ADR 0005</a>. No configura acceso desde Internet.</p></details>
           <details data-reveal><summary>¿Funciona ya en Windows y Linux?<span>+</span></summary><p>La arquitectura, los bundles y los iconos están preparados, pero el desarrollo y la validación real se han realizado primero en macOS. Los instaladores de Windows y Linux siguen en el roadmap.</p></details>
         </div>
       </section>
