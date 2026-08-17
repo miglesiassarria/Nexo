@@ -78,69 +78,23 @@ fn main() {
             // ventana cerrada.
             let gateway_nexo = nexo.clone();
 
-            // Decide la dirección y, si hace falta, el certificado —
-            // probado en `Nexo::prepare_gateway_bind` sin depender de
-            // Tauri. Si el modo red está pedido pero el certificado no se
-            // pudo preparar, el plan ya cae a 127.0.0.1 y deja el motivo en
-            // `bind_error`, así que aquí solo hace falta seguir el plan.
-            let data_dir = nexo_core::service::default_db_path()
-                .parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            let plan = nexo.prepare_gateway_bind(&settings, &data_dir);
+            // Decide la dirección, probado en `Nexo::prepare_gateway_bind`
+            // sin depender de Tauri: `127.0.0.1` o, con el modo red activo,
+            // `0.0.0.0`. Un solo listener y siempre HTTP plano — el ADR 0005
+            // retiró el cifrado del acceso desde la red local.
+            let plan = nexo.prepare_gateway_bind(&settings);
             let addr = plan.addr;
-
-            // En modo red hay dos listeners en el mismo puerto: este, HTTP
-            // plano y solo en loopback, para los clientes de esta máquina que
-            // ya estaban configurados con `http://127.0.0.1:<puerto>/v1`; y
-            // el de `0.0.0.0` con TLS, más abajo, para la red. Se reserva
-            // primero el específico: el sistema entrega cada conexión al
-            // socket más ajustado, así que ninguno le quita conexiones al
-            // otro. Sin esto, activar la red local dejaba sin servicio a
-            // todos los clientes locales.
-            if let Some(loopback) = plan.loopback_addr {
-                match tauri::async_runtime::block_on(nexo_core::gateway::bind(loopback)) {
-                    Ok(listener) => {
-                        tracing::info!(%loopback, "gateway escuchando en loopback sin TLS");
-                        let local = nexo.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = nexo_core::gateway::serve_on(local, listener).await {
-                                tracing::error!(error = %e, "el gateway de loopback se detuvo");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        let detail = format!(
-                            "el modo red está activo pero no se pudo reservar {loopback} para \
-                             los clientes de este ordenador: {e}. Las aplicaciones locales \
-                             tendrán que usar https://127.0.0.1:{} y aceptar el certificado.",
-                            settings.port
-                        );
-                        tracing::error!("{detail}");
-                        nexo.set_bind_error(Some(detail));
-                    }
-                }
-            }
 
             // El puerto se reserva de forma síncrona: si está ocupado, el
             // panel debe decirlo en lugar de mostrarse como activo.
             match tauri::async_runtime::block_on(nexo_core::gateway::bind(addr)) {
                 Ok(listener) => {
-                    tracing::info!(%addr, tls = plan.tls.is_some(), "gateway escuchando");
+                    tracing::info!(%addr, "gateway escuchando");
                     let reporting = nexo.clone();
                     tauri::async_runtime::spawn(async move {
-                        let result = match plan.tls {
-                            Some(cert) => {
-                                nexo_core::gateway::serve_on_tls(gateway_nexo, listener, &cert)
-                                    .await
-                            }
-                            None => nexo_core::gateway::serve_on(gateway_nexo, listener).await,
-                        };
-                        if let Err(e) = result {
+                        if let Err(e) = nexo_core::gateway::serve_on(gateway_nexo, listener).await {
                             tracing::error!(error = %e, "el gateway se detuvo");
-                            reporting.set_bind_error(Some(format!(
-                                "el gateway se detuvo: {e}"
-                            )));
+                            reporting.set_bind_error(Some(format!("el gateway se detuvo: {e}")));
                         }
                     });
                 }

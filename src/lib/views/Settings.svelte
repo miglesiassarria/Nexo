@@ -117,32 +117,38 @@
 
         {#if status?.lan}
           <div class="notice info">
-            <p>
-              Conecta otro equipo de tu red a
-              <code
-                >https://{status.lan.address ?? "(sin IP de red detectada)"}:{status.lan
-                  .port}/v1</code
-              >.
-            </p>
-            <p class="small">
-              Las aplicaciones de este mismo ordenador siguen usando
-              <code>{status.base_url}</code>, sin certificado ni cambio ninguno.
-            </p>
-            <p class="small">
-              Certificado autofirmado: la primera vez, ese equipo mostrará un aviso de
-              "no confiable" que hay que aceptar a mano. Para comprobar que es el
-              correcto antes de aceptarlo, compara su huella SHA-256 —
-              <code>{status.lan.cert_fingerprint_sha256}</code>
-              — con la del fichero <code>{status.lan.cert_path}</code>.
-            </p>
-            {#if status.lan.cert_rotated}
-              <p class="small">
-                <strong>El certificado se ha rehecho en este arranque</strong> porque el
-                anterior no cubría la dirección de red actual — normalmente, porque este
-                ordenador cambió de red. Su huella es nueva: los equipos que ya lo habían
-                aceptado tienen que volver a aceptarlo.
+            {#if status.lan.addresses.length > 0}
+              <p>
+                Conecta otro equipo de tu red a
+                <code
+                  >http://{status.lan.addresses[0].address}:{status.lan.port}/v1</code
+                >. No hace falta aceptar ningún certificado.
+              </p>
+              {#if status.lan.addresses.length > 1}
+                <p class="small">
+                  Nexo escucha en todas las interfaces de este equipo, así que también
+                  responde por estas direcciones:
+                </p>
+                <ul class="small">
+                  {#each status.lan.addresses.slice(1) as a}
+                    <li>
+                      <code>http://{a.address}:{status.lan.port}/v1</code>
+                      ({a.interface})
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {:else}
+              <p>
+                No se ha detectado ninguna dirección de red en este equipo. El modo está
+                activo, pero no hay por dónde conectar hasta que haya red.
               </p>
             {/if}
+            <p class="small">
+              <strong>El tráfico no va cifrado.</strong> La clave de aplicación viaja en
+              claro en cada petición, y con ella el contenido de las conversaciones.
+              Desactiva esta opción antes de conectarte a una red que no controles.
+            </p>
           </div>
         {:else}
           <p class="muted small">

@@ -86,13 +86,15 @@ pub fn lan_risk_notice() -> RiskNotice {
              Wi-Fi doméstico) podrá intentar conectarse. Sigue haciendo falta el mismo \
              token de aplicación de siempre; sin él, la petición se rechaza igual que hoy."
                 .into(),
-            "Nexo genera un certificado propio para cifrar la conexión. No está firmado \
-             por ninguna autoridad reconocida: cada dispositivo nuevo mostrará un aviso \
-             de «certificado no confiable» la primera vez, que hay que aceptar a mano."
+            "El tráfico no va cifrado. Tu clave de aplicación viaja en claro en cada \
+             petición, y con ella el contenido de las conversaciones: cualquier equipo \
+             de la misma red puede leerlo si se pone a ello. Quien capture esa clave \
+             puede usar tus suscripciones y tus API keys de pago hasta que la revoques."
                 .into(),
             "Si en este momento estás conectado a una VPN o a una red que no es la tuya, \
              quedarás expuesto también ahí: el modo escucha en todas las interfaces de \
-             red de este equipo, no solo en la que tienes en mente."
+             red de este equipo, no solo en la que tienes en mente. Conviene \
+             desactivarlo antes de conectarte a una red que no controles."
                 .into(),
             "Esto no abre Nexo a Internet ni a redes fuera de la local: sigue sin haber \
              reenvío de puertos ni acceso remoto de ningún tipo."
@@ -421,4 +423,36 @@ pub fn apply_retention(state: State<'_, AppState>) -> CmdResult<Value> {
 #[tauri::command]
 pub fn purge_stats(state: State<'_, AppState>) -> CmdResult<()> {
     state.nexo.db().purge_all_stats().map_err(map_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La mitigación de haber retirado el cifrado (ADR 0005) es que el usuario
+    /// sepa exactamente qué acepta. Si este aviso vuelve a hablar de
+    /// certificados o deja de decir que no va cifrado, la mitigación
+    /// desaparece sin que nadie se dé cuenta.
+    #[test]
+    fn lan_risk_notice_says_the_traffic_is_not_encrypted() {
+        let notice = lan_risk_notice();
+        let text = notice.points.join(" ").to_lowercase();
+
+        assert!(
+            text.contains("no va cifrado"),
+            "el aviso debe decir que el tráfico no va cifrado, con esas palabras: {text}"
+        );
+        assert!(
+            text.contains("en claro"),
+            "y qué implica: que la clave viaja en claro"
+        );
+        assert!(
+            !text.contains("certificado"),
+            "ya no hay ningún certificado que prometer: {text}"
+        );
+        assert!(
+            text.contains("token de aplicación"),
+            "el token sigue siendo obligatorio y el aviso lo dice"
+        );
+    }
 }

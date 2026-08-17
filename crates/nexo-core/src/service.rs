@@ -172,62 +172,29 @@ impl Nexo {
     /// llama, de forma síncrona, igual que hoy — esta función solo decide el
     /// plan, para que sea comprobable con `cargo test` sin pasar por Tauri.
     ///
-    /// Si `allow_lan` es `true` pero el certificado no se puede preparar,
-    /// el plan cae a `127.0.0.1` sin TLS — nunca a `0.0.0.0` sin TLS — y
-    /// deja el motivo en `bind_error()`, reutilizando el mismo canal que ya
-    /// existe para «el puerto está ocupado».
+    /// Un solo listener en los dos modos, y siempre en HTTP plano: con
+    /// `allow_lan` activo, `0.0.0.0:<puerto>` atiende igual a la red y a
+    /// loopback. No hay certificado que preparar y, por tanto, tampoco un
+    /// camino de error del certificado del que caerse: el
+    /// [ADR 0005](../../../docs/adr/0005-red-local-sin-cifrado.md) retiró el
+    /// cifrado del acceso desde la red local, con el riesgo aceptado de forma
+    /// explícita por el usuario.
     ///
-    /// Con `allow_lan` activo el plan tiene **dos** direcciones, no una: el
-    /// listener TLS en `0.0.0.0` para la red, y además HTTP plano en
-    /// `127.0.0.1` para los clientes de esta misma máquina. Antes solo había
-    /// el primero, y activar la red local rompía en silencio a todos los
-    /// clientes locales ya configurados: el panel seguía anunciando
-    /// `http://127.0.0.1:<puerto>/v1` y ese URL había dejado de existir.
-    /// Ver `Nexo::base_url` y la invariante 2 de `CLAUDE.md`.
-    pub fn prepare_gateway_bind(
-        &self,
-        settings: &Settings,
-        data_dir: &std::path::Path,
-    ) -> GatewayBindPlan {
+    /// Lo único que el modo red publica es por dónde queda escuchando, con
+    /// **todas** las direcciones y no solo la de la ruta por defecto: sin
+    /// cifrado, esa lista es la mitigación principal que queda.
+    pub fn prepare_gateway_bind(&self, settings: &Settings) -> GatewayBindPlan {
         if !settings.allow_lan {
             self.set_lan_info(None);
-            return GatewayBindPlan {
-                addr: settings.bind_addr(),
-                tls: None,
-                loopback_addr: None,
-            };
+        } else {
+            self.set_lan_info(Some(LanAccessInfo {
+                addresses: crate::net::listening_addresses(),
+                port: settings.port,
+            }));
         }
 
-        match crate::tls_cert::ensure(data_dir) {
-            Ok(cert) => {
-                self.set_lan_info(Some(LanAccessInfo {
-                    address: cert.address.map(|ip| ip.to_string()),
-                    port: settings.port,
-                    cert_fingerprint_sha256: cert.fingerprint_sha256.clone(),
-                    cert_path: cert.cert_path.display().to_string(),
-                    cert_rotated: cert.rotated,
-                }));
-                GatewayBindPlan {
-                    addr: settings.bind_addr(),
-                    tls: Some(cert),
-                    loopback_addr: Some(std::net::SocketAddr::from((
-                        [127, 0, 0, 1],
-                        settings.port,
-                    ))),
-                }
-            }
-            Err(e) => {
-                self.set_lan_info(None);
-                self.set_bind_error(Some(format!(
-                    "no se pudo preparar el certificado para la red local: {e}. \
-                     Nexo sigue escuchando solo en 127.0.0.1."
-                )));
-                GatewayBindPlan {
-                    addr: std::net::SocketAddr::from(([127, 0, 0, 1], settings.port)),
-                    tls: None,
-                    loopback_addr: None,
-                }
-            }
+        GatewayBindPlan {
+            addr: settings.bind_addr(),
         }
     }
 
@@ -2024,31 +1991,21 @@ pub struct GatewayStatus {
     pub lan: Option<LanAccessInfo>,
 }
 
-/// Dirección para conectar desde otro equipo de la red, y cómo identificar
-/// el certificado autofirmado para aceptarlo a conciencia en ese equipo.
+/// Por dónde queda alcanzable el gateway cuando el modo red está activo.
+///
+/// Son **todas** las direcciones, no solo la que el usuario tiene en mente:
+/// escuchar en `0.0.0.0` expone el gateway por cada interfaz de la máquina, y
+/// sin cifrado (ADR 0005) enseñar esa lista completa es la mitigación
+/// principal que queda del riesgo.
 #[derive(Debug, Clone, Serialize)]
 pub struct LanAccessInfo {
-    pub address: Option<String>,
+    pub addresses: Vec<crate::net::ListeningAddress>,
     pub port: u16,
-    pub cert_fingerprint_sha256: String,
-    pub cert_path: String,
-    /// El certificado se rehizo en este arranque porque el guardado no cubría
-    /// la dirección de red actual. La huella ha cambiado: los equipos que ya
-    /// lo habían aceptado tienen que volver a aceptarlo.
-    pub cert_rotated: bool,
 }
 
-/// Qué dirección usar y, si hace falta, con qué certificado. Ver
-/// `Nexo::prepare_gateway_bind`.
+/// Qué dirección reservar. Ver `Nexo::prepare_gateway_bind`.
 pub struct GatewayBindPlan {
     pub addr: std::net::SocketAddr,
-    pub tls: Option<crate::tls_cert::LanCertificate>,
-    /// Dirección adicional para servir HTTP plano solo en loopback, cuando
-    /// `addr` es el listener TLS de la red local. El sistema entrega cada
-    /// conexión al socket más específico, así que los dos pueden compartir
-    /// puerto: lo que llega a `127.0.0.1` lo atiende este, y lo que llega
-    /// por la red, el de `0.0.0.0`.
-    pub loopback_addr: Option<std::net::SocketAddr>,
 }
 
 #[cfg(test)]
@@ -3219,104 +3176,59 @@ mod tests {
 
     // -- Spec 0007: acceso desde la red local --------------------------------
 
-    fn temp_data_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nexo-service-lan-test-{name}-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn prepare_gateway_bind_with_allow_lan_false_changes_nothing() {
         let n = nexo();
         let settings = Settings { allow_lan: false, ..Default::default() };
-        let dir = temp_data_dir("local");
 
-        let plan = n.prepare_gateway_bind(&settings, &dir);
+        let plan = n.prepare_gateway_bind(&settings);
 
         assert_eq!(plan.addr.ip().to_string(), "127.0.0.1");
-        assert!(plan.tls.is_none());
         assert!(
-            plan.loopback_addr.is_none(),
-            "en modo local `addr` ya es loopback: un segundo listener sobraría"
-        );
-        assert!(n.lan_info().is_none());
-        assert!(
-            !dir.join("tls").exists(),
-            "en modo local no debe tocarse el certificado en absoluto"
+            n.lan_info().is_none(),
+            "sin modo red no hay nada que anunciar"
         );
     }
 
+    /// Spec 0012: un solo listener, HTTP plano, y ningún certificado por medio.
     #[test]
-    fn prepare_gateway_bind_with_a_ready_certificate_widens_the_bind() {
+    fn lan_mode_plans_a_single_plain_listener() {
         let n = nexo();
         let settings = Settings { allow_lan: true, port: 9191, ..Default::default() };
-        let dir = temp_data_dir("ready");
+        n.db().save_settings(&settings).unwrap();
 
-        let plan = n.prepare_gateway_bind(&settings, &dir);
+        let plan = n.prepare_gateway_bind(&settings);
 
         assert_eq!(plan.addr.ip().to_string(), "0.0.0.0");
         assert_eq!(plan.addr.port(), 9191);
-        assert!(plan.tls.is_some());
-        let info = n.lan_info().expect("debe publicarse la info de conexión");
-        assert_eq!(info.port, 9191);
-        assert!(!info.cert_fingerprint_sha256.is_empty());
         assert!(n.bind_error().is_none());
-    }
-
-    /// El fallo que rompió al usuario: al activar la red local, el gateway
-    /// pasaba a servir **solo** HTTPS en `0.0.0.0`, y todas las aplicaciones
-    /// de esta misma máquina —configuradas con `http://127.0.0.1:<puerto>/v1`,
-    /// que es justo el URL que el panel sigue anunciando en `base_url`— se
-    /// quedaban sin nada que responder.
-    #[test]
-    fn lan_mode_also_plans_a_plain_loopback_bind_for_local_clients() {
-        let n = nexo();
-        let settings = Settings { allow_lan: true, port: 9292, ..Default::default() };
-        n.db().save_settings(&settings).unwrap();
-        let dir = temp_data_dir("loopback-tambien");
-
-        let plan = n.prepare_gateway_bind(&settings, &dir);
-
-        let loopback = plan
-            .loopback_addr
-            .expect("el modo red debe seguir sirviendo en loopback sin TLS");
-        assert_eq!(loopback.ip().to_string(), "127.0.0.1");
         assert_eq!(
-            loopback.port(), settings.port,
-            "mismo puerto que anuncia `base_url`, no otro"
-        );
-        assert!(
-            n.status(&settings).unwrap().base_url.starts_with("http://127.0.0.1:9292"),
-            "el panel no debe anunciar un URL que no existe"
+            n.status(&settings).unwrap().base_url,
+            "http://127.0.0.1:9191/v1",
+            "el mismo listener sirve a loopback: el URL local no cambia"
         );
     }
 
+    /// Sin cifrado, la lista completa de direcciones de escucha es la
+    /// mitigación principal: el usuario tiene que ver por dónde queda
+    /// expuesto, no solo la dirección que tiene en mente.
     #[test]
-    fn prepare_gateway_bind_falls_back_to_loopback_when_the_certificate_is_broken() {
+    fn lan_info_lists_every_listening_address() {
         let n = nexo();
-        let settings = Settings { allow_lan: true, ..Default::default() };
-        let dir = temp_data_dir("broken");
-        let tls_dir = dir.join("tls");
-        std::fs::create_dir_all(&tls_dir).unwrap();
-        std::fs::write(tls_dir.join("cert.pem"), "no es un certificado").unwrap();
-        std::fs::write(tls_dir.join("key.pem"), "no es una clave").unwrap();
+        let settings = Settings { allow_lan: true, port: 9393, ..Default::default() };
 
-        let plan = n.prepare_gateway_bind(&settings, &dir);
+        n.prepare_gateway_bind(&settings);
 
+        let info = n.lan_info().expect("el modo red debe publicar por dónde escucha");
+        assert_eq!(info.port, 9393);
         assert_eq!(
-            plan.addr.ip().to_string(),
-            "127.0.0.1",
-            "un certificado roto nunca debe servir en 0.0.0.0 sin TLS"
+            info.addresses,
+            crate::net::listening_addresses(),
+            "todas las direcciones de la máquina, no una"
         );
-        assert!(plan.tls.is_none());
-        assert!(n.lan_info().is_none());
-        assert!(
-            n.bind_error().is_some(),
-            "el fallo debe quedar visible, no en silencio"
-        );
+        for a in &info.addresses {
+            assert!(!a.address.starts_with("127."));
+        }
     }
 
     // -- Spec 0011: token de aplicación recuperable -------------------------
