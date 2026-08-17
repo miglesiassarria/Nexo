@@ -35,6 +35,8 @@
   let openRoute = $state<string | null>(null);
   let filter = $state("");
   let saving = $state(false);
+  /** Id de la aplicación cuyo prefijo se acaba de copiar, para el aviso breve. */
+  let copiedPrefixFor = $state<string | null>(null);
 
   const routeKey = (provider: string, kind: string) => `${provider}|${kind}`;
 
@@ -276,6 +278,19 @@
     if (issued) await navigator.clipboard.writeText(issued.token);
   }
 
+  /**
+   * Copia el PREFIJO del token, no la clave completa: Nexo solo guarda su hash
+   * (invariante de seguridad) y no puede volver a mostrarla tras la emisión.
+   * Sirve para identificar la aplicación al buscarla, no para autenticar.
+   */
+  async function copyPrefix(app: App) {
+    await navigator.clipboard.writeText(app.token_prefix);
+    copiedPrefixFor = app.id;
+    setTimeout(() => {
+      if (copiedPrefixFor === app.id) copiedPrefixFor = null;
+    }, 1500);
+  }
+
   $effect(() => {
     load();
   });
@@ -326,7 +341,14 @@
             {:else}
               <span class="badge ok">Activa</span>
             {/if}
-            <code>{app.token_prefix}…</code>
+            <button
+              class="ghost copy-prefix"
+              onclick={() => copyPrefix(app)}
+              title="Copia el prefijo del token (no es la clave completa: Nexo no puede volver a mostrarla)"
+            >
+              <code>{app.token_prefix}…</code>
+              {copiedPrefixFor === app.id ? "✓ copiado" : ""}
+            </button>
             {#each distinctRoutes(details[app.id]?.grants ?? []) as g (g.provider_id + g.credential_kind)}
               <span
                 class="badge"
@@ -566,6 +588,20 @@
     overflow-x: auto;
     white-space: nowrap;
     padding: 0.45rem 0.6rem;
+  }
+
+  .copy-prefix {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .copy-prefix:hover {
+    color: var(--text);
   }
 
   .routes {
