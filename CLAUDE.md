@@ -123,12 +123,18 @@ haga explícito.
 
 9. **Solo localhost por defecto.** El gateway escucha en `127.0.0.1` salvo que
    el usuario active explícitamente el acceso desde su red local. Esa
-   activación exige a la vez autenticación (el token de aplicación ya
-   obligatorio), autorización (igual, sin cambios) y transporte cifrado
-   (TLS). Ninguna de las tres es opcional, y nunca se degradan en silencio si
-   falla alguna — ver [ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md).
+   activación exige autenticación (el token de aplicación ya obligatorio) y
+   autorización (igual, sin cambios); ninguna de las dos es opcional ni se
+   degrada en silencio — ver [ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md).
+   El transporte **no va cifrado**: el usuario aceptó de forma explícita que
+   el token y el contenido de las conversaciones sean legibles en su red a
+   cambio de que ningún cliente tenga que aceptar un certificado, y que la
+   identidad del servidor no dependa de una IP que en un portátil cambia —
+   ver [ADR 0005](docs/adr/0005-red-local-sin-cifrado.md), que sustituye al
+   punto 2 del ADR 0003 y guarda la alternativa por la que habría que volver.
+   El aviso previo dice que no va cifrado, con esas palabras.
    Acceso remoto fuera de la red local (Internet, reenvío de puertos, túneles)
-   sigue fuera del proyecto.
+   sigue fuera del proyecto, y sin cifrado no es discutible siquiera.
 
 10. **El contenido de las conversaciones no se guarda por defecto.**
 

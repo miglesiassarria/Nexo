@@ -18,7 +18,6 @@ pub mod policy;
 pub mod provider;
 pub mod secrets;
 pub mod service;
-pub mod tls_cert;
 pub mod translate;
 pub mod util;
 

@@ -4,12 +4,17 @@ export type CredentialKind = "api_key" | "subscription_oauth" | "local" | "mock"
 export type Accounting = "metered" | "subscription" | "local";
 export type CostBasis = "reported" | "estimated" | "subscription" | "unavailable";
 
+export interface ListeningAddress {
+  interface: string;
+  address: string;
+  /** La de la ruta por defecto: la que el usuario querrá usar casi siempre. */
+  preferred: boolean;
+}
+
 export interface LanAccessInfo {
-  address: string | null;
+  /** Todas las direcciones por las que queda alcanzable, no solo la preferida. */
+  addresses: ListeningAddress[];
   port: number;
-  cert_fingerprint_sha256: string;
-  cert_path: string;
-  cert_rotated: boolean;
 }
 
 export interface GatewayStatus {

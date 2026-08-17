@@ -86,8 +86,11 @@ Dos spikes de código, no documentos.
 - [ ] Exportación de estadísticas en formatos abiertos.
 - [ ] Registro opcional de contenido por aplicación, con su propia retención.
 - [ ] Gráficas de tendencia en el panel.
-- [x] Acceso desde la red local, desactivado por defecto, con TLS
-      autofirmado y el token de aplicación ya existente como autenticación
+- [x] Acceso desde la red local, desactivado por defecto, con el token de
+      aplicación ya existente como autenticación. Sin cifrado desde el
+      [ADR 0005](docs/adr/0005-red-local-sin-cifrado.md): el certificado
+      autofirmado que había iba atado a la IP de la máquina, y en un portátil
+      eso obligaba a volver a aceptarlo en cada cliente en cada cambio de red
       ([ADR 0003](docs/adr/0003-acceso-desde-la-red-local.md),
       [spec 0007](specs/0007-acceso-red-local/spec.md)).
 
