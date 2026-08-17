@@ -90,6 +90,38 @@ fn main() {
             let plan = nexo.prepare_gateway_bind(&settings, &data_dir);
             let addr = plan.addr;
 
+            // En modo red hay dos listeners en el mismo puerto: este, HTTP
+            // plano y solo en loopback, para los clientes de esta máquina que
+            // ya estaban configurados con `http://127.0.0.1:<puerto>/v1`; y
+            // el de `0.0.0.0` con TLS, más abajo, para la red. Se reserva
+            // primero el específico: el sistema entrega cada conexión al
+            // socket más ajustado, así que ninguno le quita conexiones al
+            // otro. Sin esto, activar la red local dejaba sin servicio a
+            // todos los clientes locales.
+            if let Some(loopback) = plan.loopback_addr {
+                match tauri::async_runtime::block_on(nexo_core::gateway::bind(loopback)) {
+                    Ok(listener) => {
+                        tracing::info!(%loopback, "gateway escuchando en loopback sin TLS");
+                        let local = nexo.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = nexo_core::gateway::serve_on(local, listener).await {
+                                tracing::error!(error = %e, "el gateway de loopback se detuvo");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let detail = format!(
+                            "el modo red está activo pero no se pudo reservar {loopback} para \
+                             los clientes de este ordenador: {e}. Las aplicaciones locales \
+                             tendrán que usar https://127.0.0.1:{} y aceptar el certificado.",
+                            settings.port
+                        );
+                        tracing::error!("{detail}");
+                        nexo.set_bind_error(Some(detail));
+                    }
+                }
+            }
+
             // El puerto se reserva de forma síncrona: si está ocupado, el
             // panel debe decirlo en lugar de mostrarse como activo.
             match tauri::async_runtime::block_on(nexo_core::gateway::bind(addr)) {

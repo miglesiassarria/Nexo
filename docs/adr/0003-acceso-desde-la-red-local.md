@@ -166,6 +166,33 @@ bloqueante de esta decisión.
    solo localhost, con la red local como opción explícita y no como cambio
    del valor por defecto.
 
+## Precisiones aprendidas al usarlo (2026-08-17)
+
+La primera implementación cumplía esta decisión al pie de la letra y, con
+ello, rompía el uso normal del producto. Dos correcciones, ninguna de las
+cuales cambia el modelo de amenaza:
+
+1. **«El gateway sirve HTTPS cuando escucha fuera de loopback» no significa
+   dejar de servir en loopback.** Se leyó como «un único listener, en
+   `0.0.0.0`, con TLS», y al activar el modo red todas las aplicaciones de la
+   propia máquina —configuradas con el `http://127.0.0.1:<puerto>/v1` que el
+   panel sigue anunciando— se quedaron sin nada que responder, sin ningún
+   mensaje que lo explicara. Con el modo red activo hay **dos** listeners en
+   el mismo puerto: HTTP plano en `127.0.0.1` y HTTPS en `0.0.0.0`. El
+   sistema entrega cada conexión al socket más específico, así que el tráfico
+   de red nunca cae en el listener en texto plano. Esto no relaja el punto 2
+   de la decisión: el tráfico que sale de la máquina sigue exigiendo TLS, y
+   loopback nunca lo tuvo ni lo necesitaba.
+2. **Un certificado que nombra la IP de otro día es un certificado roto.** Se
+   generaba una sola vez «mientras no cambie», sin definir cuándo cambia. Al
+   cambiar de red, el panel anunciaba `https://<IP de hoy>` y el certificado
+   nombraba otra: el cliente lo rechazaba y Nexo no se enteraba. Ahora
+   `tls_cert` deja constancia de a qué direcciones responde y lo rehace
+   cuando dejan de cubrir la actual, avisando en el panel de que la huella ha
+   cambiado y hay que volver a aceptarla. La alternativa —no rehacerlo y
+   avisar— deja al usuario con el modo red inservible hasta que borre un
+   fichero a mano.
+
 ## Revisión
 
 Esta decisión debe revisarse si:

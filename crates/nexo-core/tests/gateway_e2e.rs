@@ -2075,8 +2075,11 @@ async fn lan_mode_still_requires_the_app_token() {
 #[tokio::test]
 async fn a_plain_http_request_to_the_tls_port_gets_no_valid_response() {
     let h = start_with_lan_tls().await;
-    // Un cliente que intenta HTTP plano contra el puerto que ahora sirve
-    // HTTPS no debe recibir una respuesta válida del gateway.
+    // Un cliente que intenta HTTP plano contra un listener que sirve HTTPS no
+    // debe recibir una respuesta válida del gateway. (Aquí el listener TLS
+    // está aislado en loopback; en la aplicación real el listener TLS es el
+    // de `0.0.0.0` y loopback tiene además el suyo en texto plano, que es
+    // exactamente lo que comprueba `lan_mode_keeps_...` más abajo.)
     let plain_url = h.base.replacen("https://", "http://", 1);
     let result = reqwest::Client::new()
         .get(format!("{plain_url}/healthz"))
@@ -2086,4 +2089,113 @@ async fn a_plain_http_request_to_the_tls_port_gets_no_valid_response() {
         result.is_err(),
         "HTTP plano contra el puerto TLS no debe obtener una respuesta válida"
     );
+}
+
+/// Los dos listeners del modo red, montados igual que en `main.rs`: HTTP
+/// plano solo en `127.0.0.1` y HTTPS en `0.0.0.0`, compartiendo puerto.
+/// Devuelve el puerto, el token y un cliente que confía en el certificado.
+async fn start_with_lan_dual() -> (u16, String, reqwest::Client) {
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+    let issued = nexo.db().create_app("prueba-dual", None).expect("app");
+    nexo.db()
+        .grant_with_mandatory_limit(
+            &issued.app.id,
+            "mock",
+            CredentialKind::Mock,
+            false,
+            false,
+            None,
+            None,
+        )
+        .expect("grant");
+
+    let data_dir = std::env::temp_dir().join(format!(
+        "nexo-gateway-e2e-dual-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("directorio temporal de datos");
+    let cert = nexo_core::tls_cert::ensure(&data_dir).expect("certificado de prueba");
+
+    // Primero el específico, como en `main.rs`.
+    let loopback = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind loopback");
+    let port = loopback.local_addr().unwrap().port();
+    let wildcard = gateway::bind(format!("0.0.0.0:{port}").parse().unwrap())
+        .await
+        .expect("loopback y comodín deben poder compartir puerto");
+
+    let plain = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(plain, loopback).await;
+    });
+    let tls = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on_tls(tls, wildcard, &cert).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let root_cert_pem = std::fs::read(data_dir.join("tls").join("cert.pem")).expect("certificado");
+    let http = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(&root_cert_pem).expect("PEM válido"))
+        .build()
+        .expect("cliente HTTPS de prueba");
+
+    (port, issued.token, http)
+}
+
+/// El fallo que rompió al usuario: al activar «permitir acceso desde mi red
+/// local», el gateway pasaba a servir solo HTTPS y las aplicaciones de esta
+/// misma máquina —configuradas con el `http://127.0.0.1:<puerto>/v1` que el
+/// propio panel anuncia— dejaban de poder conectarse.
+#[tokio::test]
+async fn lan_mode_keeps_plain_http_working_on_loopback() {
+    let (port, token, _https) = start_with_lan_dual().await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "model": "mock/mock-echo",
+            "messages": [{"role": "user", "content": "hola"}],
+            "stream": false,
+        }))
+        .send()
+        .await
+        .expect("un cliente local en texto plano debe seguir conectando");
+    assert!(
+        resp.status().is_success(),
+        "con el modo red activo, http://127.0.0.1 debe seguir funcionando: {}",
+        resp.status()
+    );
+}
+
+/// La otra mitad: lo que entra por la red sigue exigiendo TLS. El listener en
+/// texto plano es solo para loopback, y eso lo garantiza el sistema al
+/// entregar cada conexión al socket más específico.
+#[tokio::test]
+async fn lan_mode_does_not_serve_plain_http_over_the_network() {
+    let Some(ip) = nexo_core::net::detect_lan_ip() else {
+        eprintln!("sin IP de red detectada: nada que comprobar en esta máquina");
+        return;
+    };
+    let (port, token, https) = start_with_lan_dual().await;
+
+    let plain = reqwest::Client::new()
+        .get(format!("http://{ip}:{port}/healthz"))
+        .send()
+        .await;
+    assert!(
+        plain.is_err(),
+        "por la red no debe haber texto plano, solo TLS"
+    );
+
+    let secure = https
+        .get(format!("https://{ip}:{port}/healthz"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("por la red, HTTPS con el certificado aceptado debe responder");
+    assert!(secure.status().is_success());
 }

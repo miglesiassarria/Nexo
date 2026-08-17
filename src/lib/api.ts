@@ -9,6 +9,7 @@ export interface LanAccessInfo {
   port: number;
   cert_fingerprint_sha256: string;
   cert_path: string;
+  cert_rotated: boolean;
 }
 
 export interface GatewayStatus {
