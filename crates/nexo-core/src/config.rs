@@ -11,9 +11,9 @@ pub const DEFAULT_RETENTION_DAYS: i64 = 90;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub port: u16,
-    /// Exponer el gateway fuera de localhost. Desactivado por defecto y sin
-    /// implementación de transporte seguro: el gateway se niega a arrancar en
-    /// 0.0.0.0 mientras no exista.
+    /// Exponer el gateway fuera de localhost. Desactivado por defecto. El
+    /// transporte va sin cifrar y exige aceptar el aviso correspondiente —
+    /// ver ADR 0005.
     pub allow_lan: bool,
     pub retention_days: i64,
     pub content_retention_days: i64,
@@ -24,6 +24,8 @@ pub struct Settings {
     pub codex_client_version: String,
     /// Dirección del servidor local de LM Studio.
     pub lmstudio_base_url: String,
+    /// Dirección del servidor local de Ollama.
+    pub ollama_base_url: String,
 }
 
 impl Default for Settings {
@@ -37,6 +39,7 @@ impl Default for Settings {
             manifest_version: crate::catalog::MANIFEST_VERSION.into(),
             codex_client_version: crate::auth::chatgpt::DEFAULT_CLIENT_VERSION.into(),
             lmstudio_base_url: crate::provider::lmstudio::DEFAULT_BASE_URL.into(),
+            ollama_base_url: crate::provider::ollama::DEFAULT_BASE_URL.into(),
         }
     }
 }

@@ -43,6 +43,9 @@ fn main() {
             commands::detect_lmstudio,
             commands::lmstudio_status,
             commands::set_lmstudio_url,
+            commands::detect_local_server,
+            commands::set_local_server_url,
+            commands::ollama_models,
             commands::lmstudio_models,
             commands::provider_rows,
             commands::connect_options,
@@ -126,6 +129,26 @@ fn main() {
                         status.base_url
                     ),
                     Err(e) => tracing::warn!(error = %e, "fallo detectando LM Studio"),
+                }
+            });
+
+            // Ollama se busca al arrancar, igual que LM Studio: si está en
+            // marcha, aparece solo.
+            let ollama_nexo = nexo.clone();
+            tauri::async_runtime::spawn(async move {
+                match ollama_nexo.detect_ollama().await {
+                    Ok(status) if status.reachable => tracing::info!(
+                        models = status.models,
+                        loaded = status.loaded,
+                        "Ollama disponible en {}",
+                        status.base_url
+                    ),
+                    Ok(status) => tracing::debug!(
+                        detail = ?status.detail,
+                        "Ollama no disponible en {}",
+                        status.base_url
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "fallo detectando Ollama"),
                 }
             });
 

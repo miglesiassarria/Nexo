@@ -84,9 +84,14 @@ a la superficie que Nexo debe exponer.
 **Modelos locales.** **LM Studio** ya está integrado: se detecta solo en
 `127.0.0.1:1234`, descubre su catálogo por su endpoint nativo con tipo, cuantización
 y estado de carga, y sirve el chat por su superficie compatible. Informa de tokens,
-así que su observabilidad es mejor que la de la vía de suscripción. **Ollama** queda
-pendiente, y entrará como otro proveedor distinto, no como una variante de este:
-son dos servidores con endpoints y metadatos propios.
+así que su observabilidad es mejor que la de la vía de suscripción.
+
+**Ollama** también, como proveedor distinto y no como variante del anterior: son
+dos servidores con endpoints y metadatos propios. Se detecta en
+`127.0.0.1:11434` y su catálogo sale de `/api/tags`, que publica las capacidades
+de cada modelo —herramientas, visión, razonamiento— en lugar de dejar que Nexo
+las adivine. Ninguno de los dos lleva credencial ni precio: corren en la máquina
+del usuario, y su contabilidad lo dice.
 
 Un modelo que solo hace embeddings se lista marcado como tal y rechaza el chat con
 un error explícito, en aplicación de la regla de no degradar en silencio.

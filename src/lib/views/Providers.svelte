@@ -140,19 +140,19 @@
         if (row.manage.kind === "custom_provider") {
           await api.updateCustomProviderUrl(row.provider_id, addressDraft);
         } else {
-          await api.setLmstudioUrl(addressDraft);
+          await api.setLocalServerUrl(row.provider_id, addressDraft);
         }
       },
       { done: "Dirección guardada." },
     );
   }
 
-  function checkLmstudio() {
+  function checkLocalServer(row: ProviderRow) {
     run(async () => {
-      const status = await api.detectLmstudio();
+      const status = await api.detectLocalServer(row.provider_id);
       info = status.reachable
-        ? `LM Studio responde: ${status.models} modelo(s), ${status.loaded} cargado(s).`
-        : (status.detail ?? "LM Studio no responde en esa dirección.");
+        ? `${row.name} responde: ${status.models} modelo(s), ${status.loaded} cargado(s).`
+        : (status.detail ?? `${row.name} no responde en esa dirección.`);
     });
   }
 
@@ -175,19 +175,19 @@
     );
   }
 
-  function connectLocalServer() {
+  function connectLocalServer(option: ConnectOption) {
     run(
       async () => {
-        const status = await api.setLmstudioUrl(formUrl);
+        const status = await api.setLocalServerUrl(option.provider_id, formUrl);
         if (!status.reachable) {
           throw new Error(
             status.detail ??
-              "No responde en esa dirección. Abre LM Studio y activa su servidor local.",
+              `No responde en esa dirección. Comprueba que ${option.name} está en marcha.`,
           );
         }
         closeAdd();
       },
-      { done: "LM Studio conectado." },
+      { done: `${option.name} conectado.` },
     );
   }
 
@@ -303,7 +303,7 @@
 
             {#if row.manage.kind === "local_server"}
               <div class="row">
-                <button onclick={checkLmstudio} disabled={busy}>
+                <button onclick={() => checkLocalServer(row)} disabled={busy}>
                   {busy ? "Comprobando…" : "Comprobar ahora"}
                 </button>
                 {#if lmstudio}
@@ -396,7 +396,7 @@
               <div></div>
               <button
                 class="primary"
-                onclick={connectLocalServer}
+                onclick={() => connectLocalServer(chosen)}
                 disabled={busy || !formUrl.trim()}
               >
                 {busy ? "Comprobando…" : "Conectar"}

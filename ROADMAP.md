@@ -98,7 +98,9 @@ Dos spikes de código, no documentos.
 
 - [x] LM Studio, con detección automática y catálogo descubierto
       ([spec 0001](specs/0001-proveedor-local-lm-studio/spec.md)).
-- [ ] Ollama, como proveedor propio y no como variante de LM Studio.
+- [x] Ollama, como proveedor propio y no como variante de LM Studio
+      ([spec 0013](specs/0013-proveedor-local-ollama/spec.md)). Capacidades
+      reales tomadas de su `/api/tags`, contabilidad local y sin credencial.
 - [ ] `/v1/embeddings`: los modelos ya se listan, pero la superficie no existe.
 - [x] Google Gemini con API key mediante su capa OpenAI-compatible, verificado
       contra la API real ([spec 0008](specs/0008-atajo-de-proveedor-gemini-api-key/spec.md)).
