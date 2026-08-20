@@ -4,7 +4,7 @@ Esquema SQLite de la primera versión. Es un borrador de trabajo: fija las decis
 
 ## Principios
 
-1. **Ningún secreto en SQLite.** Ni API keys, ni access tokens, ni refresh tokens, ni secretos OAuth. La base de datos guarda referencias al almacén seguro del sistema operativo y metadatos.
+1. **Ningún secreto en texto plano en SQLite.** Ni API keys, ni access tokens, ni refresh tokens, ni secretos OAuth. La clave maestra simétrica de 256 bits vive en el almacén seguro del sistema (Keychain en macOS) y los secretos individuales se cifran en reposo con AES-256-GCM (ADR 0006, spec 0015).
 2. **El tipo de credencial es una columna, no un detalle.** Aparece en cuentas, catálogo, permisos, límites, eventos y rollups. Sin ella no se puede comparar el uso por suscripción con el uso por API key, que es una de las preguntas centrales del panel.
 3. **Los eventos son inmutables y conservan el original.** Cada petición guarda las métricas normalizadas y, además, el objeto de uso tal como lo devolvió el proveedor.
 4. **Las agregaciones son incrementales.** Rollups horarios actualizados al cerrar cada petición. El panel nunca recorre el histórico completo.
@@ -274,6 +274,25 @@ memoria contra una caché en disco de `models.dev` (ver
 `crates/nexo-core/src/catalog/models_dev.rs`), refrescada semanalmente. Son 3,3 MB de
 miles de modelos que no interesa duplicar en la base de datos para leerlos una vez
 por sincronización.
+
+## Almacén de secretos cifrados
+
+Migración v4 (spec 0015, ADR 0006). Guarda las API keys, tokens de refresh,
+tokens de acceso y tokens recuperables de aplicación cifrados en reposo mediante
+AES-256-GCM.
+
+```sql
+CREATE TABLE encrypted_secrets (
+  key         TEXT PRIMARY KEY,
+  nonce       BLOB NOT NULL,
+  ciphertext  BLOB NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+```
+
+La clave maestra necesaria para descifrar esta tabla reside exclusivamente en el
+Llavero del sistema operativo (`com.nexo.gateway / master_key`). Un volcado de
+`nexo.sqlite` no contiene texto plano ni permite recuperar credenciales.
 
 ## Migraciones
 

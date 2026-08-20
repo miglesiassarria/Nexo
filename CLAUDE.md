@@ -84,13 +84,12 @@ repositorio de la descrita aquí: eso sigue pidiéndose en el chat.
 No se negocian dentro de una especificación. Cambiarlas exige un ADR nuevo que lo
 haga explícito.
 
-1. **Ningún secreto en SQLite.** Ni API keys, ni access tokens, ni refresh
-   tokens, ni tokens de aplicación. Van al almacén seguro del sistema; en la
-   base de datos solo la referencia y, en el caso de los tokens de
-   aplicación, también su hash para autenticar sin tocar el almacén seguro en
-   cada petición. Ver [ADR 0004](docs/adr/0004-tokens-de-aplicacion-recuperables.md):
-   el usuario aceptó explícitamente que esto iguala el riesgo de un token de
-   aplicación al de una API key de proveedor, a cambio de poder recuperarlo.
+1. **Ningún secreto en texto plano en SQLite.** Ni API keys, ni access
+   tokens, ni refresh tokens, ni tokens de aplicación. La clave maestra simétrica
+   de 256 bits vive en el almacén seguro del sistema (Keychain en macOS), y las
+   credenciales se cifran en reposo con AES-256-GCM antes de persistirse.
+   Ver [ADR 0004](docs/adr/0004-tokens-de-aplicacion-recuperables.md) y
+   [ADR 0006](docs/adr/0006-clave-maestra-en-llavero-y-almacen-cifrado.md).
 
 2. **Nunca degradar en silencio.** Si el destino no soporta una capacidad
    solicitada, error `422` explícito que nombra la capacidad. Jamás eliminarla de

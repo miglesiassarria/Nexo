@@ -115,6 +115,16 @@ impl Nexo {
             refresh_locks: tokio::sync::Mutex::new(HashMap::new()),
         });
 
+        // Migración transparente de credenciales legacy en el Llavero (ADR 0006, spec 0015).
+        let migrated =
+            crate::secrets::migrate_legacy_keyring_entries(&nexo.db, nexo.secrets.as_ref());
+        if migrated > 0 {
+            tracing::info!(
+                migrated,
+                "credenciales legacy del llavero migradas al almacén cifrado"
+            );
+        }
+
         nexo.sync_catalog()?;
         nexo.policy.warm_up()?;
         Ok(nexo)
@@ -125,7 +135,9 @@ impl Nexo {
     }
 
     pub fn open_with_system_secrets() -> Result<Arc<Self>> {
-        Self::open_default(Arc::new(SystemSecretStore))
+        let db = Db::open(&default_db_path())?;
+        let secrets = Arc::new(SystemSecretStore::new(db.clone()));
+        Self::new(db, secrets)
     }
 
     pub fn db(&self) -> &Db {
