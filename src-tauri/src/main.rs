@@ -9,7 +9,7 @@ use nexo_core::secrets::SystemSecretStore;
 use nexo_core::service::Nexo;
 use state::AppState;
 use std::sync::Arc;
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 
 fn main() {
     init_tracing();
@@ -181,6 +181,16 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                // Y sin panel a la vista, Nexo tampoco ocupa sitio en el Dock:
+                // pasa a ser lo que es, un servicio con el icono de la barra de
+                // estado como único punto de acceso. Se recupera al abrir el
+                // panel desde ahí (`tray::show_panel`).
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(e) = window.app_handle().set_dock_visibility(false) {
+                        tracing::warn!(error = %e, "no se pudo esconder el icono del Dock");
+                    }
+                }
             }
         })
         .build(tauri::generate_context!())
