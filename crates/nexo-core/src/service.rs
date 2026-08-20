@@ -18,7 +18,7 @@ use crate::provider::{
     ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
     ResolvedCredential, UsageReport, UsageSource,
 };
-use crate::secrets::{SecretRef, SecretStore, SystemSecretStore};
+use crate::secrets::{ReportingSecretStore, SecretRef, SecretStore, SystemSecretStore};
 use crate::util;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -33,7 +33,9 @@ const REFRESH_SKEW_MS: i64 = 120_000;
 
 pub struct Nexo {
     db: Db,
-    secrets: Arc<dyn SecretStore>,
+    /// Envuelto en `ReportingSecretStore`: cualquier fallo del almacén queda
+    /// registrado y visible en el panel, en lugar de solo en un log.
+    secrets: Arc<ReportingSecretStore>,
     http: reqwest::Client,
     adapters: HashMap<String, Arc<dyn ProviderAdapter>>,
     /// Instancia única y compartida: sirve a todos los proveedores que el usuario
@@ -59,6 +61,7 @@ pub struct Nexo {
 
 impl Nexo {
     pub fn new(db: Db, secrets: Arc<dyn SecretStore>) -> Result<Arc<Self>> {
+        let secrets = Arc::new(ReportingSecretStore::new(secrets));
         let http = reqwest::Client::builder()
             .user_agent(concat!("nexo/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(15))
@@ -133,8 +136,20 @@ impl Nexo {
         &self.http
     }
 
-    pub fn secrets(&self) -> &Arc<dyn SecretStore> {
-        &self.secrets
+    pub fn secrets(&self) -> &dyn SecretStore {
+        self.secrets.as_ref()
+    }
+
+    /// El último fallo del almacén seguro del sistema, si lo hubo.
+    ///
+    /// No es cosmético: cuando el llavero deja de responder —bloqueado, con la
+    /// contraseña desincronizada, o sin permiso— Nexo no puede leer ninguna
+    /// credencial ni guardar el token de una aplicación nueva. Eso se
+    /// manifestaba como síntomas dispersos («faltan modelos», «la clave solo
+    /// copia el prefijo») sin decir nunca la causa. Ver la invariante 2 de
+    /// `CLAUDE.md`: nunca degradar en silencio.
+    pub fn secrets_error(&self) -> Option<String> {
+        self.secrets.last_error()
     }
 
     pub fn is_paused(&self) -> bool {
@@ -818,8 +833,17 @@ impl Nexo {
         // guardado en SQLite es lo que de verdad autentica. Solo se pierde la
         // posibilidad de volver a copiar la clave más tarde, el mismo estado
         // en el que quedaba cualquier aplicación antes de este cambio.
-        if let Err(e) = self.secrets.set(&SecretRef::app_token(&issued.app.id), &issued.token) {
-            tracing::warn!(error = %e, app_id = %issued.app.id, "no se pudo guardar el token recuperable");
+        let mut issued = issued;
+        match self.secrets.set(&SecretRef::app_token(&issued.app.id), &issued.token) {
+            Ok(()) => issued.recoverable = true,
+            Err(e) => {
+                // Antes esto se quedaba solo aquí, y el usuario no lo sabía
+                // hasta que pulsaba la clave semanas después y le copiaba el
+                // prefijo. Ahora viaja en la respuesta y el panel lo dice en
+                // el momento de crearla.
+                tracing::warn!(error = %e, app_id = %issued.app.id, "no se pudo guardar el token recuperable");
+                issued.recoverable = false;
+            }
         }
 
         Ok(issued)
@@ -1724,6 +1748,7 @@ impl Nexo {
         Ok(GatewayStatus {
             paused: self.is_paused(),
             bind_error: self.bind_error(),
+            secrets_error: self.secrets_error(),
             port: settings.port,
             base_url: format!("http://127.0.0.1:{}/v1", settings.port),
             accounts: accounts.len(),
@@ -2139,6 +2164,11 @@ pub struct GatewayStatus {
     pub paused: bool,
     /// Presente cuando el gateway no pudo reservar el puerto.
     pub bind_error: Option<String>,
+    /// Presente cuando el almacén seguro del sistema no responde. Sin él no se
+    /// puede leer ninguna credencial ni guardar el token de una aplicación
+    /// nueva, así que el panel tiene que decirlo en lugar de dejar que se note
+    /// como síntomas sueltos.
+    pub secrets_error: Option<String>,
     pub port: u16,
     pub base_url: String,
     pub accounts: usize,
@@ -3428,6 +3458,96 @@ mod tests {
         for a in &info.addresses {
             assert!(!a.address.starts_with("127."));
         }
+    }
+
+    // -- Incidente 2026-08-20: el almacén seguro dejó de responder ----------
+
+    fn nexo_with_broken_keychain() -> Arc<Nexo> {
+        Nexo::new(
+            Db::open_in_memory().unwrap(),
+            Arc::new(crate::secrets::FailingSecretStore),
+        )
+        .unwrap()
+    }
+
+    /// El fallo real: el llavero de macOS dejó de autenticarse y Nexo lo dijo
+    /// solo en un `warn`. El usuario vio «la clave copia el prefijo» y «faltan
+    /// modelos», dos síntomas sin relación aparente, y ninguna causa.
+    #[test]
+    fn a_secure_store_that_fails_is_visible_in_the_panel() {
+        let n = nexo_with_broken_keychain();
+        let settings = Settings::default();
+
+        assert!(
+            n.status(&settings).unwrap().secrets_error.is_none(),
+            "sin haber tocado el almacén todavía no hay nada que informar"
+        );
+
+        // Cualquier operación con el almacén basta para que se sepa.
+        let _ = n.create_app("una aplicación", None);
+
+        let detail = n
+            .status(&settings)
+            .unwrap()
+            .secrets_error
+            .expect("el panel tiene que decir que el almacén seguro no responde");
+        assert!(
+            detail.contains("passphrase"),
+            "y con el motivo real del sistema, no un mensaje genérico: {detail}"
+        );
+    }
+
+    /// La aplicación se crea igual —el hash de SQLite es lo que autentica, ADR
+    /// 0004— pero se avisa en el momento de que esa clave no se podrá volver a
+    /// copiar, en lugar de descubrirlo semanas después al pulsarla.
+    #[test]
+    fn an_app_created_without_a_working_store_says_its_key_is_not_recoverable() {
+        let n = nexo_with_broken_keychain();
+
+        let issued = n.create_app("sin llavero", None).expect("la app sigue creándose");
+
+        assert!(!issued.recoverable, "hay que decir que no se podrá recuperar");
+        assert!(!issued.token.is_empty(), "y la clave se entrega igual, esta única vez");
+        assert!(
+            n.app_token_secret(&issued.app.id).is_err()
+                || n.app_token_secret(&issued.app.id).unwrap().is_none(),
+            "no hay nada guardado que recuperar"
+        );
+    }
+
+    #[test]
+    fn a_working_store_reports_a_recoverable_key_and_no_error() {
+        let n = nexo();
+
+        let issued = n.create_app("con llavero", None).unwrap();
+
+        assert!(issued.recoverable);
+        assert!(
+            n.status(&Settings::default()).unwrap().secrets_error.is_none(),
+            "si el almacén funciona, no hay aviso que dar"
+        );
+        assert_eq!(
+            n.app_token_secret(&issued.app.id).unwrap().as_deref(),
+            Some(issued.token.as_str())
+        );
+    }
+
+    /// El aviso no se queda pegado: cuando el llavero vuelve —el usuario lo
+    /// desbloquea— la siguiente operación correcta lo limpia.
+    #[test]
+    fn the_warning_clears_once_the_store_answers_again() {
+        let store = Arc::new(crate::secrets::ReportingSecretStore::new(Arc::new(
+            crate::secrets::FailingSecretStore,
+        )));
+        let _ = store.set(&SecretRef::app_token("a1"), "tok");
+        assert!(store.last_error().is_some());
+
+        let sano = crate::secrets::ReportingSecretStore::new(Arc::new(MemorySecretStore::default()));
+        let _ = sano.set(&SecretRef::app_token("a1"), "tok");
+        assert!(
+            sano.last_error().is_none(),
+            "una operación correcta no debe dejar aviso"
+        );
     }
 
     // -- Spec 0013: proveedor local Ollama -----------------------------------

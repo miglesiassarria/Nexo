@@ -81,6 +81,11 @@ pub struct Limit {
 pub struct IssuedApp {
     pub app: App,
     pub token: String,
+    /// `true` si el token quedó guardado en el almacén seguro y se podrá volver
+    /// a copiar más adelante (ADR 0004). `false` si el almacén falló: la
+    /// aplicación funciona igual —el hash de SQLite es lo que autentica—, pero
+    /// esta es la única vez que se verá la clave, y hay que decirlo ahora.
+    pub recoverable: bool,
 }
 
 pub fn generate_token() -> String {
@@ -122,6 +127,9 @@ impl Db {
                 notes: notes.map(str::to_string),
             },
             token,
+            // La base de datos no sabe nada del almacén seguro: lo resuelve
+            // `Nexo::create_app`, que es quien intenta guardarlo.
+            recoverable: false,
         })
     }
 
