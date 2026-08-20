@@ -390,7 +390,7 @@
               <div class="vault-ring"></div><div class="vault-ring inner"></div>
               <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M17 28v-7a15 15 0 0 1 30 0v7M13 28h38v29H13zM32 39v8" /></svg>
             </div>
-            <div><span class="security-kicker">ALMACÉN SEGURO DEL SISTEMA</span><h3>API keys y tokens OAuth nunca entran en SQLite.</h3><p>Keychain en macOS; almacenes equivalentes del sistema en las plataformas previstas.</p></div>
+            <div><span class="security-kicker">ALMACÉN SEGURO DEL SISTEMA</span><h3>API keys y tokens OAuth nunca entran en texto plano.</h3><p>Protegidos con clave maestra en el Keychain de macOS y cifrado AES-256-GCM en reposo.</p></div>
           </article>
           <article data-reveal><span class="mini-icon">#</span><h3>Tokens recuperables</h3><p>En SQLite solo está su hash; el token vive en el almacén seguro para poder volver a copiarlo.</p></article>
           <article data-reveal><span class="mini-icon">○</span><h3>Sin contenido por defecto</h3><p>Prompts y respuestas no forman parte del registro normal.</p></article>
