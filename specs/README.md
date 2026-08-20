@@ -21,6 +21,9 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0012](0012-red-local-sin-cifrado/spec.md) | Red local sin cifrado | `build` | Requiere [ADR 0005](../docs/adr/0005-red-local-sin-cifrado.md), que sustituye el punto 2 del [ADR 0003](../docs/adr/0003-acceso-desde-la-red-local.md) y modifica la invariante 9. El certificado iba atado a la IP: en un portátil obligaba a volver a aceptarlo en cada cliente en cada cambio de red. Se retira TLS entero, con `rcgen` y `axum-server` |
 | [0013](0013-proveedor-local-ollama/spec.md) | Proveedor local: Ollama | `build` | Verificado contra Ollama 0.32.14 real. Sus capacidades salen de `/api/tags`, que las publica; arregla además que la vista llamaba a `set_lmstudio_url` para cualquier servidor local, así que con dos, configurar uno habría pisado al otro |
 
+| [0013](0013-proveedor-local-ollama/spec.md) | Proveedor local: Ollama | `hecho` | Verificado contra Ollama 0.32.14 real. Sus capacidades salen de `/api/tags`, que las publica; arregla además que la vista llamaba a `set_lmstudio_url` para cualquier servidor local, así que con dos, configurar uno habría pisado al otro |
+| [0014](0014-sin-icono-en-el-dock-sin-ventana/spec.md) | Sin icono en el Dock cuando no hay ventana | `hecho` | Verificado con `lsappinfo` contra la app instalada: `Foreground` con panel, `UIElement` sin él, y el gateway sirviendo en los dos estados |
+
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

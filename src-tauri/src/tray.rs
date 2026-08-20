@@ -74,6 +74,15 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
 }
 
 fn show_panel<R: Runtime>(app: &AppHandle<R>) {
+    // El icono del Dock, primero. Al cerrar el panel Nexo pasa a accesoria, y
+    // una aplicación accesoria puede no recibir el foco: pedirlo antes de
+    // volver a ser normal es justo el orden que falla.
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = app.set_dock_visibility(true) {
+            tracing::warn!(error = %e, "no se pudo recuperar el icono del Dock");
+        }
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
