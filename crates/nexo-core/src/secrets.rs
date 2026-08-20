@@ -73,6 +73,60 @@ impl SecretStore for SystemSecretStore {
     }
 }
 
+/// Envoltorio que deja constancia del último fallo del almacén de verdad.
+///
+/// Existe por un incidente real (2026-08-20): el llavero de inicio de sesión de
+/// macOS dejó de autenticarse —problema del sistema, no de Nexo—, y Nexo se lo
+/// comió con un `warn` en un log que nadie mira. El usuario vio dos síntomas sin
+/// relación aparente: «la clave de la aplicación solo copia el prefijo» y «me
+/// faltan modelos de la suscripción». La causa era una sola, y estaba escrita en
+/// ninguna parte visible.
+///
+/// Envolver el almacén, en lugar de comprobarlo en cada sitio que lo usa,
+/// garantiza que **cualquier** fallo quede registrado: leer una API key,
+/// guardar el token de una aplicación o borrarlo al revocarla. Un acierto
+/// posterior lo limpia, para que el aviso no se quede pegado cuando el problema
+/// se arregla.
+pub struct ReportingSecretStore {
+    inner: std::sync::Arc<dyn SecretStore>,
+    last_error: std::sync::RwLock<Option<String>>,
+}
+
+impl ReportingSecretStore {
+    pub fn new(inner: std::sync::Arc<dyn SecretStore>) -> Self {
+        Self { inner, last_error: std::sync::RwLock::new(None) }
+    }
+
+    /// El último fallo, o `None` si la última operación fue bien.
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.read().ok().and_then(|e| e.clone())
+    }
+
+    fn record<T>(&self, result: Result<T>) -> Result<T> {
+        if let Ok(mut slot) = self.last_error.write() {
+            *slot = match &result {
+                Err(e) => Some(e.to_string()),
+                Ok(_) => None,
+            };
+        }
+        result
+    }
+}
+
+impl SecretStore for ReportingSecretStore {
+    fn set(&self, key: &SecretRef, secret: &str) -> Result<()> {
+        self.record(self.inner.set(key, secret))
+    }
+
+    fn get(&self, key: &SecretRef) -> Result<Option<String>> {
+        self.record(self.inner.get(key))
+    }
+
+    fn delete(&self, key: &SecretRef) -> Result<()> {
+        self.record(self.inner.delete(key))
+    }
+}
+
 /// Almacén en memoria, solo para pruebas.
 #[derive(Default)]
 pub struct MemorySecretStore {
@@ -95,6 +149,36 @@ impl SecretStore for MemorySecretStore {
     fn delete(&self, key: &SecretRef) -> Result<()> {
         self.inner.lock().unwrap().remove(key.as_str());
         Ok(())
+    }
+}
+
+/// Almacén que siempre falla, para reproducir el llavero inaccesible del
+/// incidente del 2026-08-20 sin depender del estado del sistema.
+#[cfg(test)]
+pub struct FailingSecretStore;
+
+#[cfg(test)]
+impl SecretStore for FailingSecretStore {
+    fn set(&self, _key: &SecretRef, _secret: &str) -> Result<()> {
+        Err(Self::error())
+    }
+
+    fn get(&self, _key: &SecretRef) -> Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn delete(&self, _key: &SecretRef) -> Result<()> {
+        Err(Self::error())
+    }
+}
+
+#[cfg(test)]
+impl FailingSecretStore {
+    fn error() -> CoreError {
+        // El mensaje literal que devolvió macOS en el incidente.
+        CoreError::Keyring(
+            "Platform failure: The user name or passphrase you entered is not correct.".into(),
+        )
     }
 }
 

@@ -29,6 +29,8 @@ export interface LocalServerStatus {
 export interface GatewayStatus {
   paused: boolean;
   bind_error: string | null;
+  /** El almacén seguro del sistema no responde: ni se leen credenciales ni se guardan claves nuevas. */
+  secrets_error: string | null;
   port: number;
   base_url: string;
   accounts: number;
@@ -67,6 +69,8 @@ export interface App {
 export interface IssuedApp {
   app: App;
   token: string;
+  /** `false` si el almacén seguro falló: esta es la única vez que se verá la clave. */
+  recoverable: boolean;
 }
 
 export interface Grant {

@@ -95,6 +95,23 @@
     </div>
   {/if}
 
+  {#if status?.secrets_error}
+    <div class="banner">
+      <div class="notice err">
+        <p>
+          <strong>El almacén seguro del sistema no responde.</strong> Nexo no puede leer las
+          credenciales de tus proveedores ni guardar la clave de una aplicación nueva, así
+          que los catálogos que dependan de una credencial se quedan sin actualizar.
+        </p>
+        <p class="small">
+          En macOS suele ser el llavero de inicio de sesión bloqueado o con la contraseña
+          desincronizada: ábrelo en Acceso a Llaveros y desbloquéalo. El sistema dice:
+        <code>{status.secrets_error}</code>
+        </p>
+      </div>
+    </div>
+  {/if}
+
   {#if status && status.apps_missing_limits.length > 0}
     <div class="banner">
       <div class="notice warn">

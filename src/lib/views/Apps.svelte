@@ -323,11 +323,24 @@
   {#if issued}
     <div class="card token-card stack">
       <h2>Token de «{issued.app.name}»</h2>
-      <p class="muted">
-        En tu herramienta va en el campo de clave API, con la URL base
-        <code>{baseUrl ?? "http://127.0.0.1:8787/v1"}</code>. Si lo pierdes, puedes
-        volver a copiarlo desde la lista de abajo.
-      </p>
+      {#if issued.recoverable}
+        <p class="muted">
+          En tu herramienta va en el campo de clave API, con la URL base
+          <code>{baseUrl ?? "http://127.0.0.1:8787/v1"}</code>. Si lo pierdes, puedes
+          volver a copiarlo desde la lista de abajo.
+        </p>
+      {:else}
+        <p class="muted">
+          En tu herramienta va en el campo de clave API, con la URL base
+          <code>{baseUrl ?? "http://127.0.0.1:8787/v1"}</code>.
+        </p>
+        <p class="notice warn">
+          <strong>Cópialo ahora: esta es la única vez que se muestra.</strong> No se ha
+          podido guardar en el almacén seguro del sistema, así que no podrás volver a
+          copiarlo desde la lista. La aplicación funciona igual. Si arreglas el acceso al
+          llavero, revócala y crea otra para tener la clave recuperable.
+        </p>
+      {/if}
       <div class="row">
         <code class="token">{issued.token}</code>
         <button onclick={copyToken}>Copiar</button>
