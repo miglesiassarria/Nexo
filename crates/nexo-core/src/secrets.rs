@@ -213,20 +213,29 @@ impl SecretStore for SystemSecretStore {
 
 /// Migración de secretos antiguos individuales del Llavero al nuevo almacén cifrado.
 ///
-/// Si existen secretos almacenados bajo el esquema anterior (`account/<id>/...`, `app/<id>/token`)
-/// en el Llavero del sistema que aún no están en la tabla `encrypted_secrets`, los traslada
-/// y elimina las entradas obsoletas del Llavero.
+/// Se ejecuta una sola vez en el ciclo de vida de la base de datos.
+/// Solo busca las claves correspondientes al `credential_kind` de cada cuenta,
+/// traslada los secretos a `encrypted_secrets` y limpia las entradas obsoletas del Llavero.
 pub fn migrate_legacy_keyring_entries(db: &Db, vault: &dyn SecretStore) -> usize {
+    if db.is_legacy_keyring_migrated() {
+        return 0;
+    }
+
     let mut migrated = 0;
 
     // Migrar cuentas
     if let Ok(accounts) = db.accounts() {
         for account in accounts {
-            let refs = [
-                SecretRef::access(&account.id),
-                SecretRef::refresh(&account.id),
-                SecretRef::api_key(&account.id),
-            ];
+            let refs: Vec<SecretRef> = match account.credential_kind {
+                crate::provider::CredentialKind::SubscriptionOauth => vec![
+                    SecretRef::access(&account.id),
+                    SecretRef::refresh(&account.id),
+                ],
+                crate::provider::CredentialKind::ApiKey => vec![SecretRef::api_key(&account.id)],
+                crate::provider::CredentialKind::Local | crate::provider::CredentialKind::Mock => {
+                    Vec::new()
+                }
+            };
             for r in refs {
                 if let Ok(None) = vault.get(&r) {
                     if let Ok(entry) = keyring::Entry::new(SERVICE, r.as_str()) {
@@ -259,6 +268,7 @@ pub fn migrate_legacy_keyring_entries(db: &Db, vault: &dyn SecretStore) -> usize
         }
     }
 
+    let _ = db.set_legacy_keyring_migrated();
     migrated
 }
 
@@ -584,5 +594,22 @@ mod tests {
 
         // Exactamente 1 acceso al Llavero
         assert_eq!(counting_provider.keychain_reads(), 1);
+    }
+
+    #[test]
+    fn migration_runs_only_once_and_sets_flag() {
+        let db = Db::open_in_memory().unwrap();
+        let master_key_provider = Arc::new(MemoryMasterKeyProvider::random());
+        let vault = EncryptedVaultSecretStore::new(db.clone(), master_key_provider);
+
+        assert!(!db.is_legacy_keyring_migrated());
+
+        let migrated_first = migrate_legacy_keyring_entries(&db, &vault);
+        assert_eq!(migrated_first, 0);
+        assert!(db.is_legacy_keyring_migrated());
+
+        // Segunda llamada no hace nada
+        let migrated_second = migrate_legacy_keyring_entries(&db, &vault);
+        assert_eq!(migrated_second, 0);
     }
 }

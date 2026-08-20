@@ -591,6 +591,28 @@ impl Db {
         let rows = stmt.query_map([], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    pub fn is_legacy_keyring_migrated(&self) -> bool {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'legacy_keyring_migrated'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|v| v == "true")
+        .unwrap_or(false)
+    }
+
+    pub fn set_legacy_keyring_migrated(&self) -> Result<()> {
+        let conn = self.lock();
+        let now = util::now_ms();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('legacy_keyring_migrated', 'true', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?1",
+            params![now],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
