@@ -17,6 +17,15 @@ export interface LanAccessInfo {
   port: number;
 }
 
+export interface LocalServerStatus {
+  provider_id: string;
+  base_url: string;
+  reachable: boolean;
+  models: number;
+  loaded: number;
+  detail: string | null;
+}
+
 export interface GatewayStatus {
   paused: boolean;
   bind_error: string | null;
@@ -266,6 +275,8 @@ export type ConnectForm =
 /** Una vía que se puede dar de alta. La lista la declara el núcleo. */
 export interface ConnectOption {
   id: string;
+  /** El proveedor a secas, para las formas que actúan sobre uno concreto. */
+  provider_id: string;
   name: string;
   summary: string;
   form: ConnectForm;
@@ -321,6 +332,15 @@ export const api = {
 
   lmstudioStatus: () => invoke<LmStudioStatus>("lmstudio_status"),
   detectLmstudio: () => invoke<LmStudioStatus>("detect_lmstudio"),
+  /**
+   * Servidores locales, por proveedor. La vista no tiene que saber cuáles hay:
+   * manda el id de la vía. Con solo LM Studio esto se llamaba a pelo, y añadir
+   * Ollama habría hecho que configurar uno cambiara la dirección del otro.
+   */
+  detectLocalServer: (providerId: string) =>
+    invoke<LocalServerStatus>("detect_local_server", { providerId }),
+  setLocalServerUrl: (providerId: string, baseUrl: string) =>
+    invoke<LocalServerStatus>("set_local_server_url", { providerId, baseUrl }),
   setLmstudioUrl: (baseUrl: string) =>
     invoke<LmStudioStatus>("set_lmstudio_url", { baseUrl }),
   lmstudioModels: () => invoke<LocalModelDetail[]>("lmstudio_models"),

@@ -11,6 +11,7 @@ use crate::gateway::wire::WireChatRequest;
 use crate::policy::PolicyEngine;
 use crate::provider::{
     chatgpt_subscription::ChatgptSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
+    ollama, ollama::OllamaAdapter,
     mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, openai_compat,
     openai_compat::OpenAiCompatAdapter,
     Accounting, AdapterError, AdapterId, ChatEvent,
@@ -66,6 +67,7 @@ impl Nexo {
         let settings = db.settings().unwrap_or_default();
         let client_version = settings.codex_client_version.clone();
         let lmstudio_url = settings.lmstudio_base_url.clone();
+        let ollama_url = settings.ollama_base_url.clone();
 
         // La retención existía como botón en Configuración, pero nadie la
         // pulsaba: sin esto, `requests` crece sin límite mientras la app esté
@@ -86,6 +88,7 @@ impl Nexo {
             )) as Arc<dyn ProviderAdapter>,
             Arc::new(OpenAiApiKeyAdapter::new(http.clone())),
             Arc::new(LmStudioAdapter::new(http.clone(), lmstudio_url)),
+            Arc::new(OllamaAdapter::new(http.clone(), ollama_url)),
             Arc::new(MockAdapter::default()),
         ] {
             adapters.insert(adapter.id().slug(), adapter);
@@ -502,6 +505,143 @@ impl Nexo {
     ///
     /// Reconstruir el adaptador exige rearrancar, así que se guarda el ajuste y se
     /// avisa. Mentir diciendo que ya está aplicado sería peor.
+    /// Busca Ollama y lo da de alta si responde como tal.
+    ///
+    /// Mismo trato que LM Studio, y por el mismo motivo: se exige la forma de su
+    /// endpoint nativo, porque dar por bueno cualquier `200` en el puerto
+    /// acabaría ofreciendo el catálogo de otro producto como si fuera de Ollama.
+    /// No hay credencial que guardar: corre en la máquina del usuario.
+    pub async fn detect_ollama(&self) -> Result<ollama::OllamaStatus> {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.ollama_base_url)
+            .unwrap_or_else(|_| ollama::DEFAULT_BASE_URL.to_string());
+
+        let status = ollama::probe(&self.http, &base_url).await;
+
+        if !status.reachable {
+            // No se borra la cuenta: que Ollama esté parado ahora no significa
+            // que el usuario ya no lo use.
+            if let Some(account) = self.db.account_for(ollama::PROVIDER, CredentialKind::Local)? {
+                let _ = self.db.set_account_status(&account.id, "expired");
+            }
+            return Ok(status);
+        }
+
+        let account = Account {
+            id: util::new_id("acc"),
+            provider_id: ollama::PROVIDER.to_string(),
+            credential_kind: CredentialKind::Local,
+            label: format!("Ollama ({})", status.base_url),
+            // Sin credencial: no hay nada que guardar en el almacén seguro.
+            keychain_ref: None,
+            external_id: Some(status.base_url.clone()),
+            scopes: None,
+            expires_at: None,
+            status: "active".into(),
+            risk_ack_at: None,
+            created_at: util::now_ms(),
+            last_used_at: None,
+        };
+        self.db.upsert_account(&account)?;
+
+        for result in self.refresh_catalog_from_providers().await {
+            if result.provider_id == ollama::PROVIDER {
+                if let Some(error) = &result.error {
+                    tracing::warn!(%error, "Ollama responde pero su catálogo falló");
+                }
+            }
+        }
+
+        tracing::info!(
+            base_url = %status.base_url,
+            models = status.models,
+            loaded = status.loaded,
+            "Ollama detectado"
+        );
+        Ok(status)
+    }
+
+    /// Detecta un servidor local por su identificador de proveedor.
+    ///
+    /// Existe para que la interfaz no tenga que saber qué servidores locales hay:
+    /// la vista recibe una vía con forma `LocalServer` y la manda aquí con su id.
+    /// Cuando solo había LM Studio, la vista llamaba a `set_lmstudio_url` a pelo,
+    /// y añadir Ollama habría hecho que pulsar «Ollama» configurara LM Studio.
+    pub async fn detect_local_server(&self, provider_id: &str) -> Result<LocalServerStatus> {
+        match provider_id {
+            lmstudio::PROVIDER => Ok(LocalServerStatus::from_lmstudio(
+                provider_id,
+                self.detect_lmstudio().await?,
+            )),
+            ollama::PROVIDER => Ok(LocalServerStatus::from_ollama(
+                provider_id,
+                self.detect_ollama().await?,
+            )),
+            other => Err(CoreError::Config(format!(
+                "«{other}» no es un servidor local que Nexo sepa detectar"
+            ))),
+        }
+    }
+
+    /// Cambia la dirección de un servidor local y vuelve a detectarlo.
+    pub async fn set_local_server_url(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+    ) -> Result<LocalServerStatus> {
+        match provider_id {
+            lmstudio::PROVIDER => Ok(LocalServerStatus::from_lmstudio(
+                provider_id,
+                self.set_lmstudio_url(base_url).await?,
+            )),
+            ollama::PROVIDER => Ok(LocalServerStatus::from_ollama(
+                provider_id,
+                self.set_ollama_url(base_url).await?,
+            )),
+            other => Err(CoreError::Config(format!(
+                "«{other}» no es un servidor local que Nexo sepa configurar"
+            ))),
+        }
+    }
+
+    /// Cambia la dirección del servidor de Ollama y vuelve a detectarlo.
+    pub async fn set_ollama_url(&self, base_url: &str) -> Result<ollama::OllamaStatus> {
+        let mut settings = self.db.settings()?;
+        settings.ollama_base_url = base_url.trim().to_string();
+        self.db.save_settings(&settings)?;
+        self.detect_ollama().await
+    }
+
+    /// Estado actual de Ollama, sin cambiar nada.
+    pub async fn ollama_status(&self) -> ollama::OllamaStatus {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.ollama_base_url)
+            .unwrap_or_else(|_| ollama::DEFAULT_BASE_URL.to_string());
+        ollama::probe(&self.http, &base_url).await
+    }
+
+    /// Cuantización, parámetros y familia de los modelos de Ollama.
+    pub async fn ollama_model_details(&self) -> Vec<ollama::LocalModelDetail> {
+        let base_url = self
+            .db
+            .settings()
+            .map(|s| s.ollama_base_url)
+            .unwrap_or_else(|_| ollama::DEFAULT_BASE_URL.to_string());
+        let base = base_url.trim().trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        match self.http.get(format!("{base}/api/tags")).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+                Ok(body) => ollama::parse_details(&body),
+                Err(_) => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
     pub async fn set_lmstudio_url(&self, base_url: &str) -> Result<lmstudio::LmStudioStatus> {
         let mut settings = self.db.settings()?;
         settings.lmstudio_base_url = base_url.trim().to_string();
@@ -1140,11 +1280,14 @@ impl Nexo {
                 .iter()
                 .any(|a| a.provider_id == provider && a.credential_kind == kind && a.status != "revoked")
         };
-        let lmstudio_url = self.db.settings().unwrap_or_default().lmstudio_base_url;
+        let saved = self.db.settings().unwrap_or_default();
+        let lmstudio_url = saved.lmstudio_base_url;
+        let ollama_url = saved.ollama_base_url;
 
         let mut out = vec![
             ConnectOption {
                 id: AdapterId::new("openai", CredentialKind::SubscriptionOauth).slug(),
+                provider_id: "openai".into(),
                 name: "ChatGPT por suscripción".into(),
                 summary: "Usa el plan que ya pagas, sin API key y sin coste por token.".into(),
                 form: ConnectForm::SubscriptionOauth,
@@ -1154,6 +1297,7 @@ impl Nexo {
             },
             ConnectOption {
                 id: AdapterId::new("lmstudio", CredentialKind::Local).slug(),
+                provider_id: "lmstudio".into(),
                 name: "LM Studio".into(),
                 summary: "Modelos que corren en tu equipo. Nada sale de la máquina y no hay coste por token.".into(),
                 form: ConnectForm::LocalServer { default_url: lmstudio_url },
@@ -1162,7 +1306,18 @@ impl Nexo {
                 docs_url: None,
             },
             ConnectOption {
+                id: AdapterId::new("ollama", CredentialKind::Local).slug(),
+                provider_id: "ollama".into(),
+                name: "Ollama".into(),
+                summary: "Modelos que corren en tu equipo. Nada sale de la máquina y no hay coste por token.".into(),
+                form: ConnectForm::LocalServer { default_url: ollama_url },
+                note: route_note("ollama", CredentialKind::Local),
+                already_connected: connected("ollama", CredentialKind::Local),
+                docs_url: None,
+            },
+            ConnectOption {
                 id: AdapterId::new("openai", CredentialKind::ApiKey).slug(),
+                provider_id: "openai".into(),
                 name: "OpenAI por API key".into(),
                 summary: "Vía estable y documentada. Se factura por token y sirve de respaldo si la suscripción deja de funcionar.".into(),
                 form: ConnectForm::ApiKey,
@@ -1176,6 +1331,7 @@ impl Nexo {
         for preset in openai_compat::presets() {
             out.push(ConnectOption {
                 id: format!("preset:{}", util::slugify(preset.suggested_name)),
+                provider_id: util::slugify(preset.suggested_name),
                 name: preset.suggested_name.to_string(),
                 summary: "Atajo con la dirección ya rellena: solo tienes que pegar la clave.".into(),
                 form: ConnectForm::CompatEndpoint {
@@ -1194,6 +1350,9 @@ impl Nexo {
         // Y el caso general, siempre al final: cualquier otro servicio compatible.
         out.push(ConnectOption {
             id: "compat:custom".into(),
+            // El proveedor todavía no existe: lo crea el alta con el nombre que
+            // ponga el usuario.
+            provider_id: String::new(),
             name: "Otro servicio OpenAI-compatible".into(),
             summary: "Groq, un proxy propio, un servidor de tu empresa… Puedes añadir varios, cada uno con su nombre.".into(),
             form: ConnectForm::CompatEndpoint {
@@ -1836,6 +1995,10 @@ pub enum ConnectForm {
 pub struct ConnectOption {
     /// Identificador estable para la interfaz, del estilo «openai:subscription_oauth».
     pub id: String,
+    /// El proveedor a secas. La vista lo necesita para las formas que actúan
+    /// sobre un proveedor concreto —hoy `LocalServer`— sin tener que partir el
+    /// `id` por el `:`, que sería adivinar el formato de otro módulo.
+    pub provider_id: String,
     pub name: String,
     pub summary: String,
     pub form: ConnectForm,
@@ -2001,6 +2164,42 @@ pub struct GatewayStatus {
 pub struct LanAccessInfo {
     pub addresses: Vec<crate::net::ListeningAddress>,
     pub port: u16,
+}
+
+/// Estado de un servidor local, con la misma forma para todos: la interfaz
+/// muestra servidores locales, no marcas concretas.
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalServerStatus {
+    pub provider_id: String,
+    pub base_url: String,
+    pub reachable: bool,
+    pub models: usize,
+    pub loaded: usize,
+    pub detail: Option<String>,
+}
+
+impl LocalServerStatus {
+    fn from_lmstudio(provider_id: &str, s: lmstudio::LmStudioStatus) -> Self {
+        Self {
+            provider_id: provider_id.to_string(),
+            base_url: s.base_url,
+            reachable: s.reachable,
+            models: s.models,
+            loaded: s.loaded,
+            detail: s.detail,
+        }
+    }
+
+    fn from_ollama(provider_id: &str, s: ollama::OllamaStatus) -> Self {
+        Self {
+            provider_id: provider_id.to_string(),
+            base_url: s.base_url,
+            reachable: s.reachable,
+            models: s.models,
+            loaded: s.loaded,
+            detail: s.detail,
+        }
+    }
 }
 
 /// Qué dirección reservar. Ver `Nexo::prepare_gateway_bind`.
@@ -3229,6 +3428,64 @@ mod tests {
         for a in &info.addresses {
             assert!(!a.address.starts_with("127."));
         }
+    }
+
+    // -- Spec 0013: proveedor local Ollama -----------------------------------
+
+    /// Ollama tiene que aparecer como vía dable de alta sin que la vista sepa de
+    /// su existencia: con la forma `LocalServer`, igual que LM Studio.
+    #[test]
+    fn ollama_is_offered_as_a_local_server_route() {
+        let n = nexo();
+        let options = n.connect_options().unwrap();
+
+        let ollama = options
+            .iter()
+            .find(|o| o.id == AdapterId::new("ollama", CredentialKind::Local).slug())
+            .expect("Ollama debe ofrecerse como vía");
+
+        match &ollama.form {
+            ConnectForm::LocalServer { default_url } => {
+                assert_eq!(default_url, crate::provider::ollama::DEFAULT_BASE_URL);
+            }
+            other => panic!("Ollama es un servidor local, no {other:?}"),
+        }
+        assert!(!ollama.already_connected);
+    }
+
+    /// El fallo que este despachador evita: cuando solo existía LM Studio, la
+    /// vista llamaba a `set_lmstudio_url` para cualquier servidor local. Con dos,
+    /// eso habría hecho que configurar Ollama cambiara la dirección de LM Studio.
+    #[tokio::test]
+    async fn each_local_server_keeps_its_own_address() {
+        let n = nexo();
+
+        // Direcciones que no responden: lo que importa aquí es dónde se guardan,
+        // no que haya un servidor detrás.
+        let _ = n.set_local_server_url("ollama", "http://127.0.0.1:59991").await;
+        let _ = n
+            .set_local_server_url("lmstudio", "http://127.0.0.1:59992")
+            .await;
+
+        let saved = n.db().settings().unwrap();
+        assert_eq!(saved.ollama_base_url, "http://127.0.0.1:59991");
+        assert_eq!(
+            saved.lmstudio_base_url, "http://127.0.0.1:59992",
+            "configurar uno no debe pisar al otro"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_local_server_is_refused_by_name() {
+        let n = nexo();
+        let err = n
+            .set_local_server_url("vllm", "http://127.0.0.1:8000")
+            .await
+            .expect_err("un proveedor que Nexo no conoce no se acepta en silencio");
+        assert!(
+            err.to_string().contains("vllm"),
+            "el error debe nombrar lo que se pidió: {err}"
+        );
     }
 
     // -- Spec 0011: token de aplicación recuperable -------------------------

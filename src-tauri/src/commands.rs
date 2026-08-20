@@ -9,7 +9,8 @@ use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
 use nexo_core::provider::CredentialKind;
 use nexo_core::service::{
-    CatalogRefresh, ConnectOption, GatewayStatus, GrantableRoute, ProviderRow, RouteModels,
+    CatalogRefresh, ConnectOption, GatewayStatus, GrantableRoute, LocalServerStatus, ProviderRow,
+    RouteModels,
 };
 use nexo_core::util;
 use serde::Serialize;
@@ -172,6 +173,39 @@ pub async fn set_lmstudio_url(
 pub async fn lmstudio_models(state: State<'_, AppState>) -> CmdResult<Vec<LocalModelDetail>> {
     let nexo = state.nexo.clone();
     Ok(nexo.lmstudio_model_details().await)
+}
+
+/// Detecta un servidor local por su proveedor. La vista manda el id de la vía y
+/// no necesita saber qué servidores locales existen.
+#[tauri::command]
+pub async fn detect_local_server(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> CmdResult<LocalServerStatus> {
+    let nexo = state.nexo.clone();
+    nexo.detect_local_server(&provider_id).await.map_err(map_err)
+}
+
+/// Cambia la dirección de un servidor local y vuelve a detectarlo.
+#[tauri::command]
+pub async fn set_local_server_url(
+    state: State<'_, AppState>,
+    provider_id: String,
+    base_url: String,
+) -> CmdResult<LocalServerStatus> {
+    let nexo = state.nexo.clone();
+    nexo.set_local_server_url(&provider_id, &base_url)
+        .await
+        .map_err(map_err)
+}
+
+/// Parámetros, cuantización y familia de los modelos de Ollama.
+#[tauri::command]
+pub async fn ollama_models(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<nexo_core::provider::ollama::LocalModelDetail>> {
+    let nexo = state.nexo.clone();
+    Ok(nexo.ollama_model_details().await)
 }
 
 // -- Pestaña de Proveedores -------------------------------------------------

@@ -6,6 +6,7 @@
 
 pub mod chatgpt_subscription;
 pub mod lmstudio;
+pub mod ollama;
 pub mod openai_compat;
 pub mod mock;
 pub mod openai_apikey;

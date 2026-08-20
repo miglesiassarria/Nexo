@@ -2055,3 +2055,142 @@ async fn lan_mode_serves_plain_http_over_the_network() {
         with_token.status()
     );
 }
+
+// -- Spec 0013: proveedor local Ollama --------------------------------------
+
+/// Igual que `start_with_lmstudio`, contra el Ollama que haya en marcha en la
+/// máquina. Si no hay ninguno, la prueba se omite en lugar de fallar: es la
+/// misma convención que la vía de LM Studio.
+async fn start_with_ollama() -> Option<Harness> {
+    let db = Db::open_in_memory().expect("db");
+    let nexo = Nexo::new(db, Arc::new(MemorySecretStore::default())).expect("nexo");
+
+    let status = nexo.detect_ollama().await.expect("detección");
+    if !status.reachable {
+        eprintln!("Ollama no está en marcha ({:?}); prueba omitida", status.detail);
+        return None;
+    }
+
+    let issued = nexo.db().create_app("prueba-ollama", None).expect("app");
+    // Sin límite a propósito: la vía local no lo exige.
+    nexo.db()
+        .set_grant(
+            &issued.app.id,
+            &nexo_core::apps::Grant {
+                provider_id: "ollama".into(),
+                credential_kind: "local".into(),
+                model_pattern: "*".into(),
+                allow_tools: true,
+                allow_multimodal: true,
+                log_content: false,
+                reasoning_effort: None,
+            },
+        )
+        .expect("grant");
+
+    let listener = gateway::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let serving = nexo.clone();
+    tokio::spawn(async move {
+        let _ = gateway::serve_on(serving, listener).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    Some(Harness {
+        base: format!("http://127.0.0.1:{port}"),
+        token: issued.token,
+        nexo,
+        http: reqwest::Client::new(),
+    })
+}
+
+/// Primer modelo de Ollama del catálogo que sirva para chat.
+fn first_ollama_chat_model(h: &Harness) -> Option<String> {
+    h.nexo
+        .db()
+        .catalog_rows()
+        .expect("catálogo")
+        .into_iter()
+        .find(|r| r.provider_id == "ollama" && r.caps.text)
+        .map(|r| r.public_name)
+}
+
+#[tokio::test]
+async fn ollama_models_are_served_through_the_gateway() {
+    let Some(h) = start_with_ollama().await else { return };
+    let Some(model) = first_ollama_chat_model(&h) else {
+        eprintln!("Ollama está en marcha pero sin modelos de chat; prueba omitida");
+        return;
+    };
+
+    let body = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "di solo: hola"}],
+        "max_tokens": 40,
+        "stream": false,
+    });
+
+    let without_token = h
+        .http
+        .post(format!("{}/v1/chat/completions", h.base))
+        .json(&body)
+        .send()
+        .await
+        .expect("respuesta");
+    assert_eq!(
+        without_token.status(),
+        401,
+        "la vía local no exime del token de aplicación"
+    );
+
+    let resp = h.post_chat(body).await;
+    assert!(
+        resp.status().is_success(),
+        "un modelo local debe servirse igual que cualquier otro: {}",
+        resp.status()
+    );
+    let v: Value = resp.json().await.expect("json");
+    assert!(
+        v["choices"][0]["message"]["content"].is_string(),
+        "debe venir contenido: {v}"
+    );
+    assert!(
+        v["usage"]["total_tokens"].as_u64().unwrap_or(0) > 0,
+        "Ollama informa de uso real, y Nexo lo transmite: {}",
+        v["usage"]
+    );
+}
+
+/// La razón de ser de esta especificación frente al apaño de darlo de alta como
+/// proveedor genérico con una clave inventada: la contabilidad tiene que decir
+/// que corre en la máquina del usuario y no cuesta nada.
+#[tokio::test]
+async fn ollama_models_are_catalogued_as_local_and_free() {
+    let Some(h) = start_with_ollama().await else { return };
+
+    let rows: Vec<_> = h
+        .nexo
+        .db()
+        .catalog_rows()
+        .expect("catálogo")
+        .into_iter()
+        .filter(|r| r.provider_id == "ollama")
+        .collect();
+    assert!(!rows.is_empty(), "Ollama detectado debe poblar el catálogo");
+
+    for r in &rows {
+        assert_eq!(r.credential_kind, "local", "{} no es una vía de pago", r.public_name);
+        assert_eq!(
+            r.accounting, "local",
+            "{} corre en el equipo: contabilidad local",
+            r.public_name
+        );
+        assert!(
+            r.price_input.is_none() && r.price_output.is_none(),
+            "{} no lleva precio, ni cero",
+            r.public_name
+        );
+    }
+}
