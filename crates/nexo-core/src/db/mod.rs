@@ -554,6 +554,43 @@ impl Db {
         conn.execute("DELETE FROM custom_providers WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // -- Secretos cifrados (ADR 0006, spec 0015) ----------------------------
+
+    pub fn upsert_encrypted_secret(&self, key: &str, nonce: &[u8], ciphertext: &[u8]) -> Result<()> {
+        let conn = self.lock();
+        let now = util::now_ms();
+        conn.execute(
+            "INSERT INTO encrypted_secrets (key, nonce, ciphertext, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(key) DO UPDATE SET nonce = ?2, ciphertext = ?3, updated_at = ?4",
+            params![key, nonce, ciphertext, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_encrypted_secret(&self, key: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT nonce, ciphertext FROM encrypted_secrets WHERE key = ?1",
+        )?;
+        Ok(stmt
+            .query_row(params![key], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?)
+    }
+
+    pub fn delete_encrypted_secret(&self, key: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM encrypted_secrets WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
+    pub fn list_encrypted_secret_keys(&self) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT key FROM encrypted_secrets ORDER BY key")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }
 
 #[cfg(test)]
@@ -796,5 +833,37 @@ mod tests {
         assert!(a.is_expired(30_000), "con margen de 30s ya debe considerarse caducado");
         a.expires_at = None;
         assert!(!a.is_expired(999_999));
+    }
+
+    #[test]
+    fn encrypted_secrets_crud_roundtrip() {
+        let db = db();
+        let key = "account/test/api_key";
+        let nonce = b"123456789012";
+        let ciphertext = b"ciphertext-data-here";
+
+        assert_eq!(db.get_encrypted_secret(key).unwrap(), None);
+        assert!(db.list_encrypted_secret_keys().unwrap().is_empty());
+
+        db.upsert_encrypted_secret(key, nonce, ciphertext).unwrap();
+
+        let read = db.get_encrypted_secret(key).unwrap().unwrap();
+        assert_eq!(read.0, nonce.to_vec());
+        assert_eq!(read.1, ciphertext.to_vec());
+
+        assert_eq!(db.list_encrypted_secret_keys().unwrap(), vec![key.to_string()]);
+
+        // Actualización
+        let nonce2 = b"abcdefghijkl";
+        let ciphertext2 = b"new-ciphertext";
+        db.upsert_encrypted_secret(key, nonce2, ciphertext2).unwrap();
+        let read2 = db.get_encrypted_secret(key).unwrap().unwrap();
+        assert_eq!(read2.0, nonce2.to_vec());
+        assert_eq!(read2.1, ciphertext2.to_vec());
+
+        // Borrado
+        db.delete_encrypted_secret(key).unwrap();
+        assert_eq!(db.get_encrypted_secret(key).unwrap(), None);
+        assert!(db.list_encrypted_secret_keys().unwrap().is_empty());
     }
 }

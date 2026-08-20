@@ -23,6 +23,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 
 | [0013](0013-proveedor-local-ollama/spec.md) | Proveedor local: Ollama | `hecho` | Verificado contra Ollama 0.32.14 real. Sus capacidades salen de `/api/tags`, que las publica; arregla además que la vista llamaba a `set_lmstudio_url` para cualquier servidor local, así que con dos, configurar uno habría pisado al otro |
 | [0014](0014-sin-icono-en-el-dock-sin-ventana/spec.md) | Sin icono en el Dock cuando no hay ventana | `hecho` | Verificado con `lsappinfo` contra la app instalada: `Foreground` con panel, `UIElement` sin él, y el gateway sirviendo en los dos estados |
+| [0015](0015-clave-maestra-en-llavero/spec.md) | Clave maestra en el Llavero del sistema y almacenamiento cifrado de credenciales | `hecho` | Requiere [ADR 0006](../docs/adr/0006-clave-maestra-en-llavero-y-almacen-cifrado.md); reduce de 4-6 a 1 las peticiones de contraseña del Llavero en cada nuevo despliegue |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 

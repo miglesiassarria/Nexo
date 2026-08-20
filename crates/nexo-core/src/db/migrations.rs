@@ -5,7 +5,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: i64 = 3;
+pub const CURRENT_VERSION: i64 = 4;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -30,6 +30,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
         conn.execute_batch(V3)?;
         conn.pragma_update(None, "user_version", 3)?;
         tracing::info!("esquema migrado a la versión 3");
+    }
+
+    if version < 4 {
+        conn.execute_batch(V4)?;
+        conn.pragma_update(None, "user_version", 4)?;
+        tracing::info!("esquema migrado a la versión 4");
     }
 
     Ok(())
@@ -227,6 +233,17 @@ const V3: &str = r#"
 ALTER TABLE app_grants ADD COLUMN reasoning_effort TEXT;
 "#;
 
+/// Almacén de secretos cifrados en reposo con AES-256-GCM (ADR 0006, spec 0015).
+/// La clave maestra vive en el Llavero del sistema; en SQLite solo los blobs cifrados.
+const V4: &str = r#"
+CREATE TABLE IF NOT EXISTS encrypted_secrets (
+  key         TEXT PRIMARY KEY,
+  nonce       BLOB NOT NULL,
+  ciphertext  BLOB NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,7 +305,7 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, CURRENT_VERSION);
 
         let (pattern, allow_tools, effort): (String, i64, Option<String>) = conn
             .query_row(
@@ -307,6 +324,29 @@ mod tests {
     }
 
     #[test]
+    fn migration_v4_creates_encrypted_secrets_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch(V2).unwrap();
+        conn.execute_batch(V3).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+
+        apply(&conn).unwrap();
+
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 4);
+
+        conn.execute(
+            "INSERT INTO encrypted_secrets (key, nonce, ciphertext, updated_at)
+             VALUES ('test/key', X'0102030405060708090a0b0c', X'aabbcc', 1234)",
+            [],
+        )
+        .expect("la tabla encrypted_secrets debe aceptar escrituras");
+    }
+
+    #[test]
     fn creates_every_expected_table() {
         let conn = mem();
         let mut stmt = conn
@@ -322,6 +362,7 @@ mod tests {
             "app_grants",
             "app_limits",
             "apps",
+            "encrypted_secrets",
             "models",
             "request_content",
             "requests",

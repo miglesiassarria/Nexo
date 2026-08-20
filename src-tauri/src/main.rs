@@ -5,16 +5,14 @@ mod commands;
 mod state;
 mod tray;
 
-use nexo_core::secrets::SystemSecretStore;
 use nexo_core::service::Nexo;
 use state::AppState;
-use std::sync::Arc;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
     init_tracing();
 
-    let nexo = match Nexo::open_default(Arc::new(SystemSecretStore)) {
+    let nexo = match Nexo::open_with_system_secrets() {
         Ok(n) => n,
         Err(e) => {
             eprintln!("Nexo no pudo arrancar: {e}");
