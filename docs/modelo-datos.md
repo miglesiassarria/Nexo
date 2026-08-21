@@ -236,7 +236,7 @@ CREATE TABLE settings (
 );
 ```
 
-Solo configuración no sensible. Claves iniciales previstas: puerto de escucha, exposición en LAN (por defecto desactivada), días de retención de `requests`, días de retención de contenido, nivel de log y versión del manifiesto de modelos.
+Solo configuración no sensible. Claves iniciales previstas: puerto de escucha, exposición en LAN (por defecto desactivada), días de retención de `requests`, días de retención de contenido, nivel de log, versión del manifiesto de modelos y `max_request_body_bytes` (límite de tamaño máximo de petición en bytes o `null`, spec 0017 y ADR 0007).
 
 La retención se aplica sobre `requests` y sobre la tabla de contenido, nunca sobre `usage_hourly`: el histórico agregado sobrevive al borrado del detalle, que es lo que permite conservar tendencias largas con poco espacio.
 
