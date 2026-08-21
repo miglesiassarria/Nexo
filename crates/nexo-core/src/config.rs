@@ -26,6 +26,8 @@ pub struct Settings {
     pub lmstudio_base_url: String,
     /// Dirección del servidor local de Ollama.
     pub ollama_base_url: String,
+    /// Tamaño máximo permitido para peticiones entrantes de chat en bytes (None = sin límite de Nexo).
+    pub max_request_body_bytes: Option<u64>,
 }
 
 impl Default for Settings {
@@ -40,6 +42,7 @@ impl Default for Settings {
             codex_client_version: crate::auth::chatgpt::DEFAULT_CLIENT_VERSION.into(),
             lmstudio_base_url: crate::provider::lmstudio::DEFAULT_BASE_URL.into(),
             ollama_base_url: crate::provider::ollama::DEFAULT_BASE_URL.into(),
+            max_request_body_bytes: Some(crate::db::DEFAULT_MAX_REQUEST_BODY_BYTES),
         }
     }
 }

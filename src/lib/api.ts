@@ -313,6 +313,7 @@ export interface Settings {
   log_level: string;
   manifest_version: string;
   codex_client_version: string;
+  max_request_body_bytes: number | null;
 }
 
 export interface RiskNotice {

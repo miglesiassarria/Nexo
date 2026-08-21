@@ -23,7 +23,7 @@ use crate::util;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -125,6 +125,11 @@ impl Nexo {
             );
         }
 
+        // Limpieza de temporales huérfanos de ejecuciones previas (Spec 0017, ADR 0007).
+        let temp_dir = default_temp_dir();
+        let _ = std::fs::create_dir_all(&temp_dir);
+        cleanup_orphan_temp_files(&temp_dir);
+
         nexo.sync_catalog()?;
         nexo.policy.warm_up()?;
         Ok(nexo)
@@ -166,6 +171,10 @@ impl Nexo {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn temp_dir(&self) -> PathBuf {
+        default_temp_dir()
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -1875,6 +1884,29 @@ pub fn default_db_path() -> PathBuf {
         })
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("nexo.sqlite")
+}
+
+pub fn default_temp_dir() -> PathBuf {
+    let base = default_db_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::temp_dir().join("nexo"));
+    base.join("temp")
+}
+
+pub fn cleanup_orphan_temp_files(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("req_") && name.ends_with(".tmp") {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Todo lo necesario para ejecutar y registrar una petición.

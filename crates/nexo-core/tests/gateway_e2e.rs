@@ -2194,3 +2194,111 @@ async fn ollama_models_are_catalogued_as_local_and_free() {
         );
     }
 }
+
+/// Fallo reproducido (spec 0017): cuerpos mayores a 2 MiB (p.ej. imágenes base64 de 3-4 MB)
+/// son rechazados con 413 por el límite por defecto de Axum antes de llegar al handler.
+#[tokio::test]
+async fn request_body_exceeding_two_megabytes_reaches_handler_with_configured_default() {
+    let h = start().await;
+    // Generar un payload con texto grande de ~3 MiB
+    let large_text = "x".repeat(3 * 1024 * 1024);
+    let resp = h
+        .post_chat(json!({
+            "model": "mock/mock-echo",
+            "messages": [{"role": "user", "content": large_text}],
+            "stream": false
+        }))
+        .await;
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "Un cuerpo de ~3 MiB debe ser aceptado por defecto (límite 32 MiB)"
+    );
+}
+
+#[tokio::test]
+async fn configuring_small_limit_rejects_larger_payload_with_openai_json_413() {
+    let h = start().await;
+
+    // 1. Configurar límite de 1 MiB (1.048.576 bytes)
+    let limit_1m = 1024 * 1024;
+    h.nexo.db().set_max_request_body_bytes(Some(limit_1m)).unwrap();
+
+    // 2. Enviar cuerpo de ~1.5 MiB
+    let payload_1_5m = "y".repeat((1.5 * 1024.0 * 1024.0) as usize);
+    let resp = h
+        .post_chat(json!({
+            "model": "mock/mock-echo",
+            "messages": [{"role": "user", "content": payload_1_5m}],
+            "stream": false
+        }))
+        .await;
+
+    assert_eq!(resp.status(), 413);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "request_too_large");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["nexo"]["max_bytes"], limit_1m);
+
+    // 3. El rechazo 413 no debe registrarse como consumo exitoso del proveedor
+    let recent = h.nexo.db().recent_requests(0, 10).unwrap();
+    assert!(recent.is_empty(), "la petición rechazada con 413 no debe registrarse en recent_requests");
+
+    // 4. Aumentar el límite a 64 MiB y enviar la misma petición: pasa de inmediato sin reiniciar
+    h.nexo.db().set_max_request_body_bytes(Some(64 * 1024 * 1024)).unwrap();
+    let resp2 = h
+        .post_chat(json!({
+            "model": "mock/mock-echo",
+            "messages": [{"role": "user", "content": "hola tras aumentar el límite"}],
+            "stream": false
+        }))
+        .await;
+    assert_eq!(resp2.status(), 200);
+}
+
+#[tokio::test]
+async fn unauthenticated_or_paused_request_is_rejected_early() {
+    let h = start().await;
+
+    // 1. Sin autenticación -> 401
+    let large_text = "z".repeat(1024 * 1024);
+    let resp_unauth = h.http
+        .post(format!("{}/v1/chat/completions", h.base))
+        .json(&json!({
+            "model": "mock/mock-echo",
+            "messages": [{"role": "user", "content": large_text}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp_unauth.status(), 401);
+
+    // 2. Con gateway en pausa -> 503 gateway_paused
+    h.nexo.set_paused(true);
+    let resp_paused = h.post_chat(json!({
+        "model": "mock/mock-echo",
+        "messages": [{"role": "user", "content": "hola"}]
+    })).await;
+    assert_eq!(resp_paused.status(), 503);
+    let body_paused: Value = resp_paused.json().await.unwrap();
+    assert_eq!(body_paused["error"]["code"], "gateway_paused");
+}
+
+#[tokio::test]
+async fn no_limit_setting_persists_as_none_and_allows_payload() {
+    let h = start().await;
+
+    // "Sin límite impuesto por Nexo"
+    h.nexo.db().set_max_request_body_bytes(None).unwrap();
+    assert_eq!(h.nexo.db().max_request_body_bytes().unwrap(), None);
+
+    let large_text = "w".repeat(3 * 1024 * 1024);
+    let resp = h.post_chat(json!({
+        "model": "mock/mock-echo",
+        "messages": [{"role": "user", "content": large_text}],
+        "stream": false
+    })).await;
+
+    assert_eq!(resp.status(), 200);
+}

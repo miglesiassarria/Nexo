@@ -1,6 +1,7 @@
 //! Interfaz del gateway: recibe peticiones de las aplicaciones y devuelve
 //! respuestas compatibles con OpenAI.
 
+pub mod body;
 pub mod routes;
 pub mod wire;
 
