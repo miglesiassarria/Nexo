@@ -25,6 +25,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0014](0014-sin-icono-en-el-dock-sin-ventana/spec.md) | Sin icono en el Dock cuando no hay ventana | `hecho` | Verificado con `lsappinfo` contra la app instalada: `Foreground` con panel, `UIElement` sin él, y el gateway sirviendo en los dos estados |
 | [0015](0015-clave-maestra-en-llavero/spec.md) | Clave maestra en el Llavero del sistema y almacenamiento cifrado de credenciales | `hecho` | Requiere [ADR 0006](../docs/adr/0006-clave-maestra-en-llavero-y-almacen-cifrado.md); reduce de 4-6 a 1 las peticiones de contraseña del Llavero en cada nuevo despliegue |
 | [0016](0016-correlacion-tool-calls-responses-api/spec.md) | Correlación de identificadores en llamadas a herramientas de Responses API | `hecho` | Corrige que `ChunkBuilder` cambiaba el índice de 0 a 1 por la disparidad entre `item.id` (`fc_xxx`) y `item.call_id` (`call_xxx`) |
+| [0017](0017-limite-tamano-peticiones/spec.md) | Límite de tamaño de peticiones de chat y archivos | `hecho` | Corrige el 413 en payloads grandes (imágenes base64) con límite configurable (default 32 MiB, 1 MiB–5 GiB / sin límite) e ingestión protegida por disco |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 

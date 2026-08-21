@@ -431,6 +431,11 @@ pub fn save_settings(
             "hay que aceptar el aviso antes de activar el acceso desde la red local".into(),
         );
     }
+    if let Some(bytes) = settings.max_request_body_bytes {
+        if !(nexo_core::db::MIN_MAX_REQUEST_BODY_BYTES..=nexo_core::db::MAX_MAX_REQUEST_BODY_BYTES).contains(&bytes) {
+            return Err("el tamaño máximo de petición debe estar entre 1 MiB y 5 GiB".into());
+        }
+    }
     state.nexo.db().save_settings(&settings).map_err(map_err)?;
     // El puerto y el modo de red solo cambian al reiniciar: el gateway ya
     // está escuchando con la configuración anterior.

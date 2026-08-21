@@ -1,5 +1,6 @@
 //! Rutas del gateway local.
 
+use crate::gateway::body::receive_body;
 use crate::gateway::wire::{error_body, ChunkBuilder, WireChatRequest};
 use crate::provider::{AdapterError, ChatEvent, EventStream, FinishReason, ToolCall};
 use crate::service::{Collector, Nexo, Prepared};
@@ -19,7 +20,10 @@ pub fn router(nexo: Arc<Nexo>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/models", get(models))
-        .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/v1/chat/completions",
+            post(chat_completions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .fallback(not_found)
         .with_state(nexo)
 }
@@ -122,8 +126,9 @@ async fn models(State(nexo): State<Arc<Nexo>>, headers: HeaderMap) -> Response {
 async fn chat_completions(
     State(nexo): State<Arc<Nexo>>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Response {
+    // 1. Pre-autenticación antes de descargar el cuerpo
     let Some(token) = bearer(&headers) else {
         return unauthorized("falta la cabecera Authorization: Bearer <token de Nexo>");
     };
@@ -131,6 +136,7 @@ async fn chat_completions(
         return unauthorized("el token no es válido o ha sido revocado");
     };
 
+    // 2. Comprobar si Nexo está pausado
     if nexo.is_paused() {
         return simple_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -139,14 +145,32 @@ async fn chat_completions(
         );
     }
 
-    let wire: WireChatRequest = match serde_json::from_slice(&body) {
+    // 3. Recibir el cuerpo con límite de tamaño dinámico e ingestión protegida
+    let max_bytes = match nexo.db().max_request_body_bytes() {
+        Ok(limit) => limit,
+        Err(e) => {
+            return simple_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("no se pudo leer la configuración de tamaño: {e}"),
+                "internal_error",
+            );
+        }
+    };
+
+    let temp_dir = nexo.temp_dir();
+    let mut payload = match receive_body(body, max_bytes, &temp_dir).await {
+        Ok(p) => p,
+        Err(err) => return err.into_response(),
+    };
+
+    let wire: WireChatRequest = match serde_json::from_reader(payload.reader()) {
         Ok(w) => w,
         Err(e) => {
             return simple_error(
                 StatusCode::BAD_REQUEST,
                 &format!("cuerpo inválido: {e}"),
                 "invalid_body",
-            )
+            );
         }
     };
 

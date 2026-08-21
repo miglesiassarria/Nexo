@@ -17,6 +17,10 @@ pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
 
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 32 * 1024 * 1024; // 32 MiB
+pub const MIN_MAX_REQUEST_BODY_BYTES: u64 = 1024 * 1024; // 1 MiB
+pub const MAX_MAX_REQUEST_BODY_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GiB
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -63,6 +67,17 @@ impl Db {
                 "codex_client_version" => settings.codex_client_version = value,
                 "lmstudio_base_url" => settings.lmstudio_base_url = value,
                 "ollama_base_url" => settings.ollama_base_url = value,
+                "max_request_body_bytes" => {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty()
+                        || trimmed.eq_ignore_ascii_case("null")
+                        || trimmed.eq_ignore_ascii_case("none")
+                    {
+                        settings.max_request_body_bytes = None;
+                    } else if let Ok(n) = trimmed.parse::<u64>() {
+                        settings.max_request_body_bytes = Some(n);
+                    }
+                }
                 _ => {}
             }
         }
@@ -72,6 +87,10 @@ impl Db {
     pub fn save_settings(&self, s: &Settings) -> Result<()> {
         let conn = self.lock();
         let now = util::now_ms();
+        let body_bytes_str = match s.max_request_body_bytes {
+            Some(b) => b.to_string(),
+            None => "null".to_string(),
+        };
         for (key, value) in [
             ("port", s.port.to_string()),
             ("allow_lan", s.allow_lan.to_string()),
@@ -82,6 +101,7 @@ impl Db {
             ("codex_client_version", s.codex_client_version.clone()),
             ("lmstudio_base_url", s.lmstudio_base_url.clone()),
             ("ollama_base_url", s.ollama_base_url.clone()),
+            ("max_request_body_bytes", body_bytes_str),
         ] {
             conn.execute(
                 "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
@@ -613,6 +633,57 @@ impl Db {
         )?;
         Ok(())
     }
+
+    pub fn max_request_body_bytes(&self) -> Result<Option<u64>> {
+        let conn = self.lock();
+        let res: rusqlite::Result<String> = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'max_request_body_bytes'",
+            [],
+            |r| r.get(0),
+        );
+        match res {
+            Ok(v) => {
+                let trimmed = v.trim();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") || trimmed.eq_ignore_ascii_case("none") {
+                    Ok(None)
+                } else {
+                    match trimmed.parse::<u64>() {
+                        Ok(n) => Ok(Some(n)),
+                        Err(_) => Ok(Some(DEFAULT_MAX_REQUEST_BODY_BYTES)),
+                    }
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Ok(Some(DEFAULT_MAX_REQUEST_BODY_BYTES))
+            }
+            Err(e) => Err(CoreError::Db(e)),
+        }
+    }
+
+    pub fn set_max_request_body_bytes(&self, bytes: Option<u64>) -> Result<()> {
+        if let Some(val) = bytes {
+            if !(MIN_MAX_REQUEST_BODY_BYTES..=MAX_MAX_REQUEST_BODY_BYTES).contains(&val) {
+                return Err(CoreError::Config(format!(
+                    "el límite de tamaño de petición ({val} bytes) debe estar entre {} (1 MiB) y {} (5 GiB)",
+                    MIN_MAX_REQUEST_BODY_BYTES, MAX_MAX_REQUEST_BODY_BYTES
+                )));
+            }
+        }
+
+        let conn = self.lock();
+        let now = util::now_ms();
+        let value_str = match bytes {
+            Some(b) => b.to_string(),
+            None => "null".to_string(),
+        };
+
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('max_request_body_bytes', ?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?2",
+            params![value_str, now],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -887,5 +958,49 @@ mod tests {
         db.delete_encrypted_secret(key).unwrap();
         assert_eq!(db.get_encrypted_secret(key).unwrap(), None);
         assert!(db.list_encrypted_secret_keys().unwrap().is_empty());
+    }
+
+    #[test]
+    fn max_request_body_bytes_configuration_and_bounds() {
+        let db = db();
+
+        // 1. Por defecto devuelve 32 MiB
+        assert_eq!(
+            db.max_request_body_bytes().unwrap(),
+            Some(DEFAULT_MAX_REQUEST_BODY_BYTES)
+        );
+
+        // 2. Modificación válida (64 MiB)
+        let val_64m = 64 * 1024 * 1024;
+        db.set_max_request_body_bytes(Some(val_64m)).unwrap();
+        assert_eq!(db.max_request_body_bytes().unwrap(), Some(val_64m));
+
+        // 3. Modificación a 5 GiB (límite máximo permitido)
+        db.set_max_request_body_bytes(Some(MAX_MAX_REQUEST_BODY_BYTES))
+            .unwrap();
+        assert_eq!(
+            db.max_request_body_bytes().unwrap(),
+            Some(MAX_MAX_REQUEST_BODY_BYTES)
+        );
+
+        // 4. Modificación a 1 MiB (límite mínimo permitido)
+        db.set_max_request_body_bytes(Some(MIN_MAX_REQUEST_BODY_BYTES))
+            .unwrap();
+        assert_eq!(
+            db.max_request_body_bytes().unwrap(),
+            Some(MIN_MAX_REQUEST_BODY_BYTES)
+        );
+
+        // 5. Sin límite impuesto por Nexo (None / null)
+        db.set_max_request_body_bytes(None).unwrap();
+        assert_eq!(db.max_request_body_bytes().unwrap(), None);
+
+        // 6. Rechazo de valores fuera de rango (< 1 MiB o > 5 GiB)
+        assert!(db
+            .set_max_request_body_bytes(Some(MIN_MAX_REQUEST_BODY_BYTES - 1))
+            .is_err());
+        assert!(db
+            .set_max_request_body_bytes(Some(MAX_MAX_REQUEST_BODY_BYTES + 1))
+            .is_err());
     }
 }
