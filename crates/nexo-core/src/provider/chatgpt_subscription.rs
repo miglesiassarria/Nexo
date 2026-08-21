@@ -166,6 +166,7 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
             });
         }
 
+        let mut translator = responses::ResponsesEventTranslator::new();
         let stream = resp
             .bytes_stream()
             .eventsource()
@@ -173,7 +174,7 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
                 Err(e) => Err(AdapterError::Transport { detail: e.to_string() }),
                 Ok(event) => Ok(event),
             })
-            .flat_map(|item| {
+            .flat_map(move |item| {
                 let out: Vec<Result<ChatEvent, AdapterError>> = match item {
                     Err(e) => vec![Err(e)],
                     Ok(event) => {
@@ -188,7 +189,7 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
                                     ),
                                 })],
                                 Ok(value) => {
-                                    match responses::translate_event(&event.event, &value) {
+                                    match translator.translate_event(&event.event, &value) {
                                         Translated::Events(evs) => evs.into_iter().map(Ok).collect(),
                                         Translated::Failure(e) => vec![Err(e)],
                                         Translated::Ignored => vec![],

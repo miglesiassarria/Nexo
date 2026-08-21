@@ -8,6 +8,7 @@ use crate::provider::{
     UsageReport, UsageSource,
 };
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
 /// Construye el cuerpo de una petición Responses a partir de la petición interna.
 pub fn build_request(req: &ChatRequest) -> Value {
@@ -134,163 +135,226 @@ pub enum Translated {
     Ignored,
 }
 
-/// Traduce un evento SSE de Responses al vocabulario interno.
+/// Traductor con estado de eventos SSE de la Responses API.
+///
+/// Mantiene la correlación entre los identificadores internos del stream (`item.id`,
+/// p.ej. `"fc_123"`) y los identificadores canónicos de la llamada (`call_id`,
+/// p.ej. `"call_123"`), garantizando que los deltas posteriores compartan el mismo `id`
+/// canónico y `ChunkBuilder` mantenga un índice único (`index: 0`) para toda la llamada.
+#[derive(Default, Debug, Clone)]
+pub struct ResponsesEventTranslator {
+    item_to_call_id: HashMap<String, String>,
+}
+
+impl ResponsesEventTranslator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resuelve el identificador de llamada canónico a partir de un `item_id` o `call_id`.
+    pub fn resolve_call_id(&self, id: &str) -> String {
+        if let Some(canonical) = self.item_to_call_id.get(id) {
+            canonical.clone()
+        } else {
+            id.to_string()
+        }
+    }
+
+    fn register_mapping(&mut self, item_id: Option<&str>, call_id: Option<&str>) {
+        if let (Some(item_id), Some(call_id)) = (item_id, call_id) {
+            if !item_id.is_empty() && !call_id.is_empty() {
+                self.item_to_call_id
+                    .insert(item_id.to_string(), call_id.to_string());
+                self.item_to_call_id
+                    .insert(call_id.to_string(), call_id.to_string());
+            }
+        }
+    }
+
+    /// Traduce un evento SSE de Responses al vocabulario interno.
+    pub fn translate_event(&mut self, event_name: &str, data: &Value) -> Translated {
+        // Algunos eventos llegan sin `event:` y traen el tipo dentro del payload.
+        let kind = if event_name.is_empty() {
+            data.get("type").and_then(|v| v.as_str()).unwrap_or("")
+        } else {
+            event_name
+        };
+
+        match kind {
+            "response.created" => Translated::Events(vec![ChatEvent::Started {
+                provider_request_id: data
+                    .pointer("/response/id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            }]),
+
+            "response.output_text.delta" => match data.get("delta").and_then(|v| v.as_str()) {
+                Some(text) if !text.is_empty() => {
+                    Translated::Events(vec![ChatEvent::TextDelta { text: text.to_string() }])
+                }
+                _ => Translated::Ignored,
+            },
+
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                match data.get("delta").and_then(|v| v.as_str()) {
+                    Some(text) if !text.is_empty() => Translated::Events(vec![
+                        ChatEvent::ReasoningDelta { text: text.to_string() },
+                    ]),
+                    _ => Translated::Ignored,
+                }
+            }
+
+            "response.output_item.added" => {
+                let item = data.get("item");
+                let is_call = item
+                    .and_then(|i| i.get("type"))
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == "function_call")
+                    .unwrap_or(false);
+                if !is_call {
+                    return Translated::Ignored;
+                }
+                let item_id = item.and_then(|i| i.get("id")).and_then(|v| v.as_str());
+                let explicit_call_id = call_id(item);
+                self.register_mapping(item_id, explicit_call_id.as_deref());
+
+                let id = explicit_call_id
+                    .or_else(|| item_id.map(str::to_string))
+                    .unwrap_or_default();
+                let name = item
+                    .and_then(|i| i.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Translated::Events(vec![ChatEvent::ToolCallStart { id, name }])
+            }
+
+            "response.function_call_arguments.delta" => {
+                let raw_id = data
+                    .get("item_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let id = self.resolve_call_id(raw_id);
+                match data.get("delta").and_then(|v| v.as_str()) {
+                    Some(args) if !args.is_empty() => Translated::Events(vec![
+                        ChatEvent::ToolCallDelta { id, args_json: args.to_string() },
+                    ]),
+                    _ => Translated::Ignored,
+                }
+            }
+
+            "response.function_call_arguments.done" => {
+                let raw_id = data
+                    .get("item_id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        data.get("item")
+                            .and_then(|i| i.get("id"))
+                            .and_then(|v| v.as_str())
+                    });
+                let id = raw_id
+                    .map(|r| self.resolve_call_id(r))
+                    .or_else(|| call_id(data.get("item")));
+                match id {
+                    Some(id) if !id.is_empty() => {
+                        Translated::Events(vec![ChatEvent::ToolCallEnd { id }])
+                    }
+                    _ => Translated::Ignored,
+                }
+            }
+
+            "response.output_item.done" => {
+                let item = data.get("item");
+                let item_id = item.and_then(|i| i.get("id")).and_then(|v| v.as_str());
+                let explicit_call_id = call_id(item);
+                self.register_mapping(item_id, explicit_call_id.as_deref());
+
+                let id = explicit_call_id
+                    .or_else(|| item_id.map(|r| self.resolve_call_id(r)));
+                match id {
+                    Some(id) if !id.is_empty() => {
+                        let mut events = Vec::new();
+                        if let Some(arguments) = item
+                            .and_then(|value| value.get("arguments"))
+                            .and_then(|value| value.as_str())
+                        {
+                            events.push(ChatEvent::ToolCallArgumentsDone {
+                                id: id.clone(),
+                                args_json: arguments.to_string(),
+                            });
+                        }
+                        events.push(ChatEvent::ToolCallEnd { id });
+                        Translated::Events(events)
+                    }
+                    _ => Translated::Ignored,
+                }
+            }
+
+            "response.completed" => {
+                let response = data.get("response");
+                let usage = parse_usage(response.and_then(|r| r.get("usage")));
+                let reason = finish_reason(response);
+                let mut events = Vec::new();
+                if let Some(u) = usage {
+                    events.push(ChatEvent::Usage(u));
+                } else {
+                    // La ruta de suscripción no informa de tokens. Se registra
+                    // como no disponible; no se inventa una cifra.
+                    events.push(ChatEvent::Usage(UsageReport::unavailable()));
+                }
+                events.push(ChatEvent::Finished { reason });
+                Translated::Events(events)
+            }
+
+            "response.incomplete" => {
+                let reason = data
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let finish = if reason == "max_output_tokens" {
+                    FinishReason::Length
+                } else {
+                    FinishReason::ContentFilter
+                };
+                Translated::Events(vec![
+                    ChatEvent::Usage(
+                        parse_usage(data.pointer("/response/usage"))
+                            .unwrap_or_else(UsageReport::unavailable),
+                    ),
+                    ChatEvent::Finished { reason: finish },
+                ])
+            }
+
+            "response.failed" | "error" => {
+                let message = data
+                    .pointer("/response/error/message")
+                    .or_else(|| data.pointer("/error/message"))
+                    .or_else(|| data.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("el proveedor no detalló el error")
+                    .to_string();
+                let code = data
+                    .pointer("/response/error/code")
+                    .or_else(|| data.pointer("/error/code"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                Translated::Failure(AdapterError::Upstream {
+                    status: 502,
+                    provider_code: code,
+                    message,
+                })
+            }
+
+            _ => Translated::Ignored,
+        }
+    }
+}
+
+/// Traduce un evento SSE de Responses al vocabulario interno (función de conveniencia stateless).
 ///
 /// `event_name` es el campo `event:` del SSE y `data` su payload ya parseado.
 pub fn translate_event(event_name: &str, data: &Value) -> Translated {
-    // Algunos eventos llegan sin `event:` y traen el tipo dentro del payload.
-    let kind = if event_name.is_empty() {
-        data.get("type").and_then(|v| v.as_str()).unwrap_or("")
-    } else {
-        event_name
-    };
-
-    match kind {
-        "response.created" => Translated::Events(vec![ChatEvent::Started {
-            provider_request_id: data
-                .pointer("/response/id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        }]),
-
-        "response.output_text.delta" => match data.get("delta").and_then(|v| v.as_str()) {
-            Some(text) if !text.is_empty() => {
-                Translated::Events(vec![ChatEvent::TextDelta { text: text.to_string() }])
-            }
-            _ => Translated::Ignored,
-        },
-
-        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-            match data.get("delta").and_then(|v| v.as_str()) {
-                Some(text) if !text.is_empty() => Translated::Events(vec![
-                    ChatEvent::ReasoningDelta { text: text.to_string() },
-                ]),
-                _ => Translated::Ignored,
-            }
-        }
-
-        "response.output_item.added" => {
-            let item = data.get("item");
-            let is_call = item
-                .and_then(|i| i.get("type"))
-                .and_then(|v| v.as_str())
-                .map(|t| t == "function_call")
-                .unwrap_or(false);
-            if !is_call {
-                return Translated::Ignored;
-            }
-            let id = call_id(item).unwrap_or_default();
-            let name = item
-                .and_then(|i| i.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            Translated::Events(vec![ChatEvent::ToolCallStart { id, name }])
-        }
-
-        "response.function_call_arguments.delta" => {
-            let id = data
-                .get("item_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            match data.get("delta").and_then(|v| v.as_str()) {
-                Some(args) if !args.is_empty() => Translated::Events(vec![
-                    ChatEvent::ToolCallDelta { id, args_json: args.to_string() },
-                ]),
-                _ => Translated::Ignored,
-            }
-        }
-
-        "response.function_call_arguments.done" => {
-            let id = data
-                .get("item_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .or_else(|| call_id(data.get("item")));
-            match id {
-                Some(id) if !id.is_empty() => {
-                    Translated::Events(vec![ChatEvent::ToolCallEnd { id }])
-                }
-                _ => Translated::Ignored,
-            }
-        }
-
-        "response.output_item.done" => {
-            let item = data.get("item");
-            let id = call_id(item);
-            match id {
-                Some(id) if !id.is_empty() => {
-                    let mut events = Vec::new();
-                    if let Some(arguments) = item
-                        .and_then(|value| value.get("arguments"))
-                        .and_then(|value| value.as_str())
-                    {
-                        events.push(ChatEvent::ToolCallArgumentsDone {
-                            id: id.clone(),
-                            args_json: arguments.to_string(),
-                        });
-                    }
-                    events.push(ChatEvent::ToolCallEnd { id });
-                    Translated::Events(events)
-                }
-                _ => Translated::Ignored,
-            }
-        }
-
-        "response.completed" => {
-            let response = data.get("response");
-            let usage = parse_usage(response.and_then(|r| r.get("usage")));
-            let reason = finish_reason(response);
-            let mut events = Vec::new();
-            if let Some(u) = usage {
-                events.push(ChatEvent::Usage(u));
-            } else {
-                // La ruta de suscripción no informa de tokens. Se registra
-                // como no disponible; no se inventa una cifra.
-                events.push(ChatEvent::Usage(UsageReport::unavailable()));
-            }
-            events.push(ChatEvent::Finished { reason });
-            Translated::Events(events)
-        }
-
-        "response.incomplete" => {
-            let reason = data
-                .pointer("/response/incomplete_details/reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let finish = if reason == "max_output_tokens" {
-                FinishReason::Length
-            } else {
-                FinishReason::ContentFilter
-            };
-            Translated::Events(vec![
-                ChatEvent::Usage(
-                    parse_usage(data.pointer("/response/usage"))
-                        .unwrap_or_else(UsageReport::unavailable),
-                ),
-                ChatEvent::Finished { reason: finish },
-            ])
-        }
-
-        "response.failed" | "error" => {
-            let message = data
-                .pointer("/response/error/message")
-                .or_else(|| data.pointer("/error/message"))
-                .or_else(|| data.get("message"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("el proveedor no detalló el error")
-                .to_string();
-            let code = data
-                .pointer("/response/error/code")
-                .or_else(|| data.pointer("/error/code"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            Translated::Failure(AdapterError::Upstream { status: 502, provider_code: code, message })
-        }
-
-        _ => Translated::Ignored,
-    }
+    ResponsesEventTranslator::new().translate_event(event_name, data)
 }
 
 fn call_id(item: Option<&Value>) -> Option<String> {
@@ -666,5 +730,246 @@ mod tests {
             translate_event("response.something.new", &json!({})),
             Translated::Ignored
         ));
+    }
+
+    #[test]
+    fn realistic_openai_responses_tool_call_sequence_maintains_consistent_id_and_chunk_index() {
+        use crate::gateway::wire::ChunkBuilder;
+
+        // Secuencia realista de OpenAI Responses API:
+        // 1. response.output_item.added -> item.id = "fc_123", item.call_id = "call_123"
+        // 2. response.function_call_arguments.delta -> item_id = "fc_123", delta = "{\""
+        // 3. response.function_call_arguments.delta -> item_id = "fc_123", delta = "path\":\"img.png\"}"
+        // 4. response.function_call_arguments.done -> item_id = "fc_123"
+        // 5. response.output_item.done -> item.id = "fc_123", item.call_id = "call_123", item.arguments = "{\"path\":\"img.png\"}"
+
+        let raw_events = vec![
+            (
+                "response.output_item.added",
+                json!({
+                    "item": {
+                        "id": "fc_123",
+                        "type": "function_call",
+                        "call_id": "call_123",
+                        "name": "__MSTY_attachments_read"
+                    }
+                }),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({
+                    "item_id": "fc_123",
+                    "delta": "{\""
+                }),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({
+                    "item_id": "fc_123",
+                    "delta": "path\":\"img.png\"}"
+                }),
+            ),
+            (
+                "response.function_call_arguments.done",
+                json!({
+                    "item_id": "fc_123"
+                }),
+            ),
+            (
+                "response.output_item.done",
+                json!({
+                    "item": {
+                        "id": "fc_123",
+                        "type": "function_call",
+                        "call_id": "call_123",
+                        "name": "__MSTY_attachments_read",
+                        "arguments": "{\"path\":\"img.png\"}"
+                    }
+                }),
+            ),
+        ];
+
+        let mut builder = ChunkBuilder::new("gpt-4o");
+        let mut translator = ResponsesEventTranslator::new();
+        let mut chunks = Vec::new();
+
+        for (event_name, data) in raw_events {
+            if let Translated::Events(evs) = translator.translate_event(event_name, &data) {
+                for ev in evs {
+                    match ev {
+                        ChatEvent::ToolCallStart { id, name } => {
+                            chunks.push(builder.tool_start_chunk(&id, &name));
+                        }
+                        ChatEvent::ToolCallDelta { id, args_json } => {
+                            chunks.push(builder.tool_args_chunk(&id, &args_json));
+                        }
+                        ChatEvent::ToolCallArgumentsDone { id, args_json } => {
+                            if let Some(chunk) = builder.tool_final_args_chunk(&id, &args_json) {
+                                chunks.push(chunk);
+                            }
+                        }
+                        ChatEvent::ToolCallEnd { .. } => {}
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Cada chunk emitido para esta llamada a herramienta DEBE tener index: 0
+        for (i, chunk) in chunks.iter().enumerate() {
+            let tool_calls = chunk["choices"][0]["delta"]["tool_calls"].as_array().unwrap();
+            let index = tool_calls[0]["index"].as_u64().unwrap();
+            assert_eq!(
+                index, 0,
+                "El chunk #{i} tiene index {index}, pero todos deben tener index 0. Chunk: {chunk}"
+            );
+        }
+
+        // El primer chunk debe tener el id público "call_123"
+        let first_call = &chunks[0]["choices"][0]["delta"]["tool_calls"][0];
+        assert_eq!(first_call["id"], "call_123");
+        assert_eq!(first_call["function"]["name"], "__MSTY_attachments_read");
+    }
+
+    #[test]
+    fn multiple_tool_calls_maintain_distinct_indices_and_correlated_deltas() {
+        use crate::gateway::wire::ChunkBuilder;
+
+        let raw_events = vec![
+            // Llamada 1
+            (
+                "response.output_item.added",
+                json!({
+                    "item": {
+                        "id": "fc_1",
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather"
+                    }
+                }),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({"item_id": "fc_1", "delta": "{\"city\":"}),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({"item_id": "fc_1", "delta": "\"Madrid\"}"}),
+            ),
+            (
+                "response.function_call_arguments.done",
+                json!({"item_id": "fc_1"}),
+            ),
+            // Llamada 2 (concurrente / secuencial en el mismo turno)
+            (
+                "response.output_item.added",
+                json!({
+                    "item": {
+                        "id": "fc_2",
+                        "type": "function_call",
+                        "call_id": "call_2",
+                        "name": "get_time"
+                    }
+                }),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({"item_id": "fc_2", "delta": "{\"tz\":"}),
+            ),
+            (
+                "response.function_call_arguments.delta",
+                json!({"item_id": "fc_2", "delta": "\"UTC\"}"}),
+            ),
+            (
+                "response.function_call_arguments.done",
+                json!({"item_id": "fc_2"}),
+            ),
+        ];
+
+        let mut builder = ChunkBuilder::new("gpt-4o");
+        let mut translator = ResponsesEventTranslator::new();
+        let mut chunks_call_1 = Vec::new();
+        let mut chunks_call_2 = Vec::new();
+
+        for (event_name, data) in raw_events {
+            if let Translated::Events(evs) = translator.translate_event(event_name, &data) {
+                for ev in evs {
+                    match ev {
+                        ChatEvent::ToolCallStart { id, name } => {
+                            let chunk = builder.tool_start_chunk(&id, &name);
+                            if id == "call_1" {
+                                chunks_call_1.push(chunk);
+                            } else {
+                                chunks_call_2.push(chunk);
+                            }
+                        }
+                        ChatEvent::ToolCallDelta { id, args_json } => {
+                            let chunk = builder.tool_args_chunk(&id, &args_json);
+                            if id == "call_1" {
+                                chunks_call_1.push(chunk);
+                            } else {
+                                chunks_call_2.push(chunk);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Llamada 1 debe tener 3 chunks, todos con index 0
+        assert_eq!(chunks_call_1.len(), 3);
+        for chunk in &chunks_call_1 {
+            let tc = chunk["choices"][0]["delta"]["tool_calls"].as_array().unwrap();
+            assert_eq!(tc[0]["index"], 0);
+        }
+        assert_eq!(chunks_call_1[0]["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1");
+
+        // Llamada 2 debe tener 3 chunks, todos con index 1
+        assert_eq!(chunks_call_2.len(), 3);
+        for chunk in &chunks_call_2 {
+            let tc = chunk["choices"][0]["delta"]["tool_calls"].as_array().unwrap();
+            assert_eq!(tc[0]["index"], 1);
+        }
+        assert_eq!(chunks_call_2[0]["choices"][0]["delta"]["tool_calls"][0]["id"], "call_2");
+    }
+
+    #[test]
+    fn tool_call_fallback_when_call_id_is_missing_or_identical() {
+        use crate::gateway::wire::ChunkBuilder;
+
+        // Caso sin call_id explícito
+        let mut translator = ResponsesEventTranslator::new();
+        let mut builder = ChunkBuilder::new("gpt-4o");
+
+        let start = translator.translate_event(
+            "response.output_item.added",
+            &json!({"item": {"id": "fc_fallback", "type": "function_call", "name": "test"}}),
+        );
+        let mut chunks = Vec::new();
+        if let Translated::Events(evs) = start {
+            for ev in evs {
+                if let ChatEvent::ToolCallStart { id, name } = ev {
+                    chunks.push(builder.tool_start_chunk(&id, &name));
+                }
+            }
+        }
+
+        let delta = translator.translate_event(
+            "response.function_call_arguments.delta",
+            &json!({"item_id": "fc_fallback", "delta": "{}"}),
+        );
+        if let Translated::Events(evs) = delta {
+            for ev in evs {
+                if let ChatEvent::ToolCallDelta { id, args_json } = ev {
+                    chunks.push(builder.tool_args_chunk(&id, &args_json));
+                }
+            }
+        }
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0]["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
+        assert_eq!(chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"], "fc_fallback");
+        assert_eq!(chunks[1]["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
     }
 }
