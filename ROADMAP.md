@@ -104,6 +104,10 @@ Dos spikes de código, no documentos.
 - [ ] `/v1/embeddings`: los modelos ya se listan, pero la superficie no existe.
 - [x] Google Gemini con API key mediante su capa OpenAI-compatible, verificado
       contra la API real ([spec 0008](specs/0008-atajo-de-proveedor-gemini-api-key/spec.md)).
+- [ ] Google Gemini por suscripción mediante OAuth de Antigravity y backend Code
+      Assist ([spec 0018](specs/0018-gemini-por-suscripcion/spec.md)); implementado
+      en `codex/gemini-subscription`, pendiente de validación con una cuenta Google
+      automatizada; validado manualmente con una cuenta real.
 - [ ] Google Gemini con OAuth de API. No se confunde con una suscripción de la
       aplicación Gemini: autoriza un proyecto de Google Cloud.
 - [ ] Anthropic por API key y, tras su propia investigación, por OAuth de

@@ -328,8 +328,11 @@ export const api = {
 
   listAccounts: () => invoke<Account[]>("list_accounts"),
   riskNotice: () => invoke<RiskNotice>("risk_notice"),
+  geminiRiskNotice: () => invoke<RiskNotice>("gemini_risk_notice"),
   connectChatgpt: (riskAcknowledged: boolean) =>
     invoke<Account>("connect_chatgpt", { riskAcknowledged }),
+  connectGeminiSubscription: (riskAcknowledged: boolean) =>
+    invoke<Account>("connect_gemini_subscription", { riskAcknowledged }),
   connectApiKey: (apiKey: string, label?: string) =>
     invoke<Account>("connect_api_key", { apiKey, label }),
   disconnectAccount: (accountId: string) =>

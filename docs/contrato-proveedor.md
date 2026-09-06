@@ -58,7 +58,7 @@ pub trait ProviderAdapter: Send + Sync {
 }
 ```
 
-`Credential` nunca contiene el secreto. Contiene una referencia al almacén seguro del sistema y los metadatos necesarios (identificador de cuenta, caducidad, proyecto). La resolución del secreto y la renovación de tokens son responsabilidad del gestor de identidad, no del adaptador.
+`Credential` nunca contiene el secreto. Contiene una referencia al almacén seguro del sistema y los metadatos necesarios (identificador de cuenta, caducidad, proyecto). En Nexo, los metadatos específicos viven en `accounts.provider_metadata` como JSON no secreto; por ejemplo, la vía de Gemini guarda `project_id`, `tier_id`, tier legible, email y subject de Google. La resolución del secreto y la renovación de tokens son responsabilidad del gestor de identidad, no del adaptador.
 
 ## Representación interna: superconjunto, no mínimo común denominador
 

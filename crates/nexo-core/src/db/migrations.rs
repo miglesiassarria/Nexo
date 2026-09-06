@@ -5,7 +5,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: i64 = 4;
+pub const CURRENT_VERSION: i64 = 5;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -36,6 +36,12 @@ pub fn apply(conn: &Connection) -> Result<()> {
         conn.execute_batch(V4)?;
         conn.pragma_update(None, "user_version", 4)?;
         tracing::info!("esquema migrado a la versión 4");
+    }
+
+    if version < 5 {
+        conn.execute_batch(V5)?;
+        conn.pragma_update(None, "user_version", 5)?;
+        tracing::info!("esquema migrado a la versión 5");
     }
 
     Ok(())
@@ -244,6 +250,12 @@ CREATE TABLE IF NOT EXISTS encrypted_secrets (
 );
 "#;
 
+const V5: &str = r#"
+-- Metadatos no secretos específicos del proveedor (spec 0018).
+-- Los tokens siguen exclusivamente en encrypted_secrets.
+ALTER TABLE accounts ADD COLUMN provider_metadata TEXT;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +348,7 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, CURRENT_VERSION);
 
         conn.execute(
             "INSERT INTO encrypted_secrets (key, nonce, ciphertext, updated_at)
@@ -344,6 +356,34 @@ mod tests {
             [],
         )
         .expect("la tabla encrypted_secrets debe aceptar escrituras");
+    }
+
+    #[test]
+    fn migration_v5_adds_provider_metadata_to_existing_accounts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch(V2).unwrap();
+        conn.execute_batch(V3).unwrap();
+        conn.execute_batch(V4).unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn.execute(
+            "INSERT INTO accounts
+             (id, provider_id, credential_kind, label, created_at)
+             VALUES ('a1', 'gemini', 'api_key', 'Gemini', 1)",
+            [],
+        )
+        .unwrap();
+
+        apply(&conn).unwrap();
+
+        let metadata: Option<String> = conn
+            .query_row(
+                "SELECT provider_metadata FROM accounts WHERE id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(metadata, None);
     }
 
     #[test]
@@ -396,7 +436,8 @@ mod tests {
         )
         .unwrap();
 
-        conn.execute("DELETE FROM apps WHERE id = 'a1'", []).unwrap();
+        conn.execute("DELETE FROM apps WHERE id = 'a1'", [])
+            .unwrap();
 
         let grants: i64 = conn
             .query_row("SELECT COUNT(*) FROM app_grants", [], |r| r.get(0))

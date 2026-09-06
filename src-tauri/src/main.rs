@@ -36,6 +36,7 @@ fn main() {
             commands::gateway_status,
             commands::list_accounts,
             commands::connect_chatgpt,
+            commands::connect_gemini_subscription,
             commands::connect_api_key,
             commands::disconnect_account,
             commands::detect_lmstudio,
@@ -71,6 +72,7 @@ fn main() {
             commands::apply_retention,
             commands::set_paused,
             commands::risk_notice,
+            commands::gemini_risk_notice,
         ])
         .setup(move |app| {
             tray::install(app.handle())?;

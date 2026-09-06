@@ -90,6 +90,93 @@ pub async fn wait_for_code(
     }
 }
 
+/// Reserva un puerto loopback libre antes de abrir el navegador y devuelve el
+/// puerto junto con la tarea que esperará el callback. Google registra los
+/// redirect URI de aplicaciones instaladas como loopback, por lo que el puerto
+/// puede ser dinámico; ChatGPT conserva su helper fijo por compatibilidad.
+pub async fn start_dynamic_wait(
+    path: &str,
+    expected_state: &str,
+    timeout: Duration,
+) -> Result<(u16, tokio::task::JoinHandle<Result<String>>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| {
+        CoreError::Auth(format!(
+            "no se pudo reservar un puerto loopback para el callback OAuth de Google ({e})"
+        ))
+    })?;
+    let port = listener.local_addr()?.port();
+    let path = path.to_string();
+    let expected_state = expected_state.to_string();
+    let waiter =
+        tokio::spawn(
+            async move { wait_on_listener(listener, &path, &expected_state, timeout).await },
+        );
+    Ok((port, waiter))
+}
+
+async fn wait_on_listener(
+    listener: TcpListener,
+    path: &str,
+    expected_state: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let accept = async {
+        loop {
+            let (mut socket, _) = listener.accept().await?;
+            let mut buf = vec![0u8; 8192];
+            let n = socket.read(&mut buf).await?;
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let Some(target) = request_target(&request) else {
+                respond(&mut socket, 400, &page_error("Petición no válida")).await?;
+                continue;
+            };
+            let (req_path, query) = split_target(&target);
+            if req_path != path {
+                respond(&mut socket, 404, "not found").await?;
+                continue;
+            }
+            let params = parse_query(query);
+            if let Some(err) = params.get("error") {
+                let detail = params
+                    .get("error_description")
+                    .cloned()
+                    .unwrap_or_else(|| err.clone());
+                respond(&mut socket, 200, &page_error(&detail)).await?;
+                return Err(CoreError::Auth(format!(
+                    "el proveedor rechazó la autorización: {detail}"
+                )));
+            }
+            match (params.get("code"), params.get("state")) {
+                (Some(code), Some(state)) if state == expected_state => {
+                    respond(&mut socket, 200, &page_ok()).await?;
+                    return Ok(code.clone());
+                }
+                (Some(_), Some(_)) => {
+                    respond(&mut socket, 400, &page_error("State no coincide")).await?;
+                    return Err(CoreError::Auth(
+                        "el parámetro state no coincide: posible CSRF, autorización descartada"
+                            .into(),
+                    ));
+                }
+                _ => {
+                    respond(&mut socket, 400, &page_error("Falta el código")).await?;
+                    return Err(CoreError::Auth(
+                        "el callback llegó sin código de autorización".into(),
+                    ));
+                }
+            }
+        }
+    };
+
+    match tokio::time::timeout(timeout, accept).await {
+        Err(_) => Err(CoreError::Auth(
+            "el callback OAuth no llegó a tiempo; la autorización se ha cancelado".into(),
+        )),
+        Ok(Err(e)) => Err(e),
+        Ok(Ok(code)) => Ok(code),
+    }
+}
+
 fn request_target(request: &str) -> Option<String> {
     let line = request.lines().next()?;
     let mut parts = line.split_whitespace();
@@ -167,7 +254,11 @@ fn page_ok() -> String {
 }
 
 fn page_error(detail: &str) -> String {
-    page("No se pudo conectar la cuenta", &html_escape(detail), "#dc2626")
+    page(
+        "No se pudo conectar la cuenta",
+        &html_escape(detail),
+        "#dc2626",
+    )
 }
 
 fn html_escape(s: &str) -> String {
@@ -221,5 +312,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no llegó a tiempo"));
+    }
+
+    #[tokio::test]
+    async fn dynamic_waiter_binds_before_receiving_the_callback() {
+        let (port, waiter) = start_dynamic_wait(
+            "/gemini/oauth2callback",
+            "state-123",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert!(port > 0);
+
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{port}/gemini/oauth2callback?code=abc&state=state-123"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(waiter.await.unwrap().unwrap(), "abc");
     }
 }

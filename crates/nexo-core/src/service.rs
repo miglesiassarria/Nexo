@@ -1,7 +1,7 @@
 //! El servicio Nexo: orquesta credenciales, enrutado, políticas y métricas.
 
 use crate::apps::{App, IssuedApp};
-use crate::auth::{self, chatgpt};
+use crate::auth::{self, chatgpt, gemini_subscription};
 use crate::catalog;
 use crate::catalog::models_dev::{self, ModelsDevCatalog};
 use crate::config::Settings;
@@ -10,12 +10,11 @@ use crate::error::{CoreError, Result};
 use crate::gateway::wire::WireChatRequest;
 use crate::policy::PolicyEngine;
 use crate::provider::{
-    chatgpt_subscription::ChatgptSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
-    ollama, ollama::OllamaAdapter,
-    mock::MockAdapter, openai_apikey::OpenAiApiKeyAdapter, openai_compat,
-    openai_compat::OpenAiCompatAdapter,
-    Accounting, AdapterError, AdapterId, ChatEvent,
-    ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
+    chatgpt_subscription::ChatgptSubscriptionAdapter,
+    gemini_subscription::GeminiSubscriptionAdapter, lmstudio, lmstudio::LmStudioAdapter,
+    mock::MockAdapter, ollama, ollama::OllamaAdapter, openai_apikey::OpenAiApiKeyAdapter,
+    openai_compat, openai_compat::OpenAiCompatAdapter, Accounting, AdapterError, AdapterId,
+    ChatEvent, ChatRequest, CostBasis, CredentialKind, EventStream, FinishReason, ProviderAdapter,
     ResolvedCredential, UsageReport, UsageSource,
 };
 use crate::secrets::{ReportingSecretStore, SecretRef, SecretStore, SystemSecretStore};
@@ -77,8 +76,7 @@ impl Nexo {
         // instalada. Se aplica en cada arranque, con la configuración vigente.
         // El botón se conserva para el caso de bajar la retención y querer
         // que surta efecto ya, sin esperar al siguiente arranque.
-        if let Err(e) =
-            db.apply_retention(settings.retention_days, settings.content_retention_days)
+        if let Err(e) = db.apply_retention(settings.retention_days, settings.content_retention_days)
         {
             tracing::warn!(error = %e, "no se pudo aplicar la retención al arrancar");
         }
@@ -89,6 +87,7 @@ impl Nexo {
                 http.clone(),
                 client_version,
             )) as Arc<dyn ProviderAdapter>,
+            Arc::new(GeminiSubscriptionAdapter::new(http.clone())) as Arc<dyn ProviderAdapter>,
             Arc::new(OpenAiApiKeyAdapter::new(http.clone())),
             Arc::new(LmStudioAdapter::new(http.clone(), lmstudio_url)),
             Arc::new(OllamaAdapter::new(http.clone(), ollama_url)),
@@ -267,7 +266,11 @@ impl Nexo {
     /// adaptador OpenAI-compatible compartido: es lo que permite que un proveedor
     /// con nombre elegido por el usuario nunca esté en el mapa fijo y funcione
     /// igual (D1 del diseño de la especificación 0002).
-    fn adapter_for(&self, provider_id: &str, kind: CredentialKind) -> Option<Arc<dyn ProviderAdapter>> {
+    fn adapter_for(
+        &self,
+        provider_id: &str,
+        kind: CredentialKind,
+    ) -> Option<Arc<dyn ProviderAdapter>> {
         let slug = AdapterId::new(provider_id, kind).slug();
         if let Some(adapter) = self.adapters.get(&slug) {
             return Some(adapter.clone());
@@ -292,7 +295,9 @@ impl Nexo {
     ) -> Result<CustomProvider> {
         let api_key = api_key.trim();
         if api_key.is_empty() {
-            return Err(CoreError::Config("el proveedor necesita una API key".into()));
+            return Err(CoreError::Config(
+                "el proveedor necesita una API key".into(),
+            ));
         }
 
         let provider = self.db.create_custom_provider(name, base_url)?;
@@ -302,7 +307,8 @@ impl Nexo {
         // `disconnect_account` sabe borrar. Guardarla bajo otro id la habría
         // dejado huérfana para siempre al desconectar (lo encontró esta prueba).
         let account_id = util::new_id("acc");
-        self.secrets.set(&SecretRef::api_key(&account_id), api_key)?;
+        self.secrets
+            .set(&SecretRef::api_key(&account_id), api_key)?;
         let account = Account {
             id: account_id.clone(),
             provider_id: provider.id.clone(),
@@ -316,6 +322,7 @@ impl Nexo {
             risk_ack_at: None,
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         };
         if let Err(e) = self.db.upsert_account(&account) {
             // No dejar un proveedor sin cuenta ni secreto huérfano.
@@ -382,7 +389,11 @@ impl Nexo {
     /// genérico enriquezca sus catálogos. Pensado para llamarse en segundo plano
     /// al arrancar, sin bloquear: si falla, el catálogo sigue siendo solo texto.
     pub async fn refresh_models_dev(&self) -> usize {
-        let cache_path = models_dev::default_cache_path(default_db_path().parent().unwrap_or(std::path::Path::new(".")));
+        let cache_path = models_dev::default_cache_path(
+            default_db_path()
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+        );
         let catalog = models_dev::load(&self.http, &cache_path).await;
         let count = catalog.provider_count();
         *self.models_dev.write().await = catalog;
@@ -433,7 +444,14 @@ impl Nexo {
             if account.status == "revoked" {
                 continue;
             }
-            let Some(adapter) = self.adapter_for(&account.provider_id, account.credential_kind) else {
+            let mut account = account;
+            if account.provider_id == gemini_subscription::PROVIDER
+                && account.status == "degraded"
+            {
+                self.try_recover_gemini_account(&mut account).await;
+            }
+            let Some(adapter) = self.adapter_for(&account.provider_id, account.credential_kind)
+            else {
                 continue;
             };
 
@@ -473,6 +491,46 @@ impl Nexo {
         }
 
         out
+    }
+
+    /// Reintenta el bootstrap sin pedir otro login cuando Google dejó la cuenta
+    /// OAuth en estado degradado. El intento solo ocurre para esa cuenta y no
+    /// inventa ni crea un proyecto: usa únicamente el que Google devuelva.
+    async fn try_recover_gemini_account(&self, account: &mut Account) {
+        let Ok(Some(access_token)) = self
+            .secrets
+            .get(&SecretRef::access(&account.id))
+        else {
+            return;
+        };
+        let Ok(mut bootstrap) =
+            gemini_subscription::bootstrap(&self.http, &access_token).await
+        else {
+            return;
+        };
+
+        let mut metadata = account
+            .provider_metadata
+            .as_deref()
+            .and_then(|value| {
+                serde_json::from_str::<gemini_subscription::AccountMetadata>(value).ok()
+            })
+            .unwrap_or_default();
+        bootstrap.metadata.email = metadata.email.take();
+        bootstrap.metadata.google_subject = metadata.google_subject.take();
+        let Ok(serialized) = serde_json::to_string(&bootstrap.metadata) else {
+            return;
+        };
+        if self
+            .db
+            .set_account_provider_metadata(&account.id, Some(&serialized))
+            .is_ok()
+        {
+            let _ = self.db.set_account_status(&account.id, "active");
+            account.status = "active".into();
+            account.provider_metadata = Some(serialized);
+            tracing::info!(account = %account.id, "cuenta degradada de Gemini recuperada con un proyecto de Antigravity");
+        }
     }
 
     // -- Proveedores locales -------------------------------------------------
@@ -517,6 +575,7 @@ impl Nexo {
             risk_ack_at: None,
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         };
         self.db.upsert_account(&account)?;
 
@@ -559,7 +618,10 @@ impl Nexo {
         if !status.reachable {
             // No se borra la cuenta: que Ollama esté parado ahora no significa
             // que el usuario ya no lo use.
-            if let Some(account) = self.db.account_for(ollama::PROVIDER, CredentialKind::Local)? {
+            if let Some(account) = self
+                .db
+                .account_for(ollama::PROVIDER, CredentialKind::Local)?
+            {
                 let _ = self.db.set_account_status(&account.id, "expired");
             }
             return Ok(status);
@@ -579,6 +641,7 @@ impl Nexo {
             risk_ack_at: None,
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         };
         self.db.upsert_account(&account)?;
 
@@ -670,10 +733,12 @@ impl Nexo {
         let base = base_url.trim().trim_end_matches('/');
         let base = base.strip_suffix("/v1").unwrap_or(base);
         match self.http.get(format!("{base}/api/tags")).send().await {
-            Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-                Ok(body) => ollama::parse_details(&body),
-                Err(_) => Vec::new(),
-            },
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body) => ollama::parse_details(&body),
+                    Err(_) => Vec::new(),
+                }
+            }
             _ => Vec::new(),
         }
     }
@@ -785,6 +850,7 @@ impl Nexo {
             risk_ack_at: Some(risk_acknowledged_at),
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         };
 
         self.db.upsert_account(&account)?;
@@ -798,6 +864,114 @@ impl Nexo {
             }
         }
 
+        Ok(account)
+    }
+
+    /// Ejecuta el flujo de conexión de Gemini/Antigravity Code Assist. El callback usa
+    /// un puerto loopback dinámico, como exige el cliente instalado de Google.
+    pub async fn connect_gemini_subscription(
+        &self,
+        risk_acknowledged_at: i64,
+        open_browser: impl FnOnce(&str) -> Result<()>,
+    ) -> Result<Account> {
+        if risk_acknowledged_at <= 0 {
+            return Err(CoreError::Forbidden(
+                "hay que aceptar el aviso de riesgo antes de conectar una suscripción".into(),
+            ));
+        }
+
+        let pkce = gemini_subscription::Pkce::generate();
+        let state = auth::new_state();
+        let (port, waiter) = auth::callback::start_dynamic_wait(
+            gemini_subscription::CALLBACK_PATH,
+            &state,
+            gemini_subscription::CALLBACK_TIMEOUT,
+        )
+        .await?;
+        let redirect_uri = format!(
+            "http://127.0.0.1:{port}{}",
+            gemini_subscription::CALLBACK_PATH
+        );
+        let url = gemini_subscription::authorize_url(&pkce, &state, &redirect_uri);
+        if let Err(error) = open_browser(&url) {
+            waiter.abort();
+            return Err(error);
+        }
+
+        let code = waiter
+            .await
+            .map_err(|e| CoreError::Auth(format!("el flujo OAuth se interrumpió: {e}")))??;
+        let tokens =
+            gemini_subscription::exchange_code(&self.http, &code, &pkce, &redirect_uri).await?;
+        let user = gemini_subscription::user_info(&self.http, &tokens.access_token).await?;
+        let account_id = util::new_id("acc");
+        let bootstrap_result =
+            gemini_subscription::bootstrap(&self.http, &tokens.access_token).await;
+        let (metadata_value, status) = match bootstrap_result {
+            Ok(mut bootstrap) => {
+                bootstrap.metadata.email = user.email.clone();
+                bootstrap.metadata.google_subject = user.id.clone();
+                (bootstrap.metadata, "active")
+            }
+            Err(error) => {
+                // OAuth ya ha terminado y el refresh token es válido aunque
+                // Google no haya asignado todavía el contexto de Antigravity.
+                // Conservamos la conexión degradada para no obligar a repetir
+                // el login y para que un refresco posterior pueda recuperarla.
+                tracing::warn!(%error, "Gemini autenticado sin proyecto de Antigravity; se conserva como degradado");
+                (
+                    gemini_subscription::AccountMetadata {
+                        email: user.email.clone(),
+                        google_subject: user.id.clone(),
+                        ..Default::default()
+                    },
+                    "degraded",
+                )
+            }
+        };
+        self.secrets
+            .set(&SecretRef::access(&account_id), &tokens.access_token)?;
+        if let Some(refresh) = &tokens.refresh_token {
+            self.secrets
+                .set(&SecretRef::refresh(&account_id), refresh)?;
+        }
+        let metadata = serde_json::to_string(&metadata_value).map_err(|e| {
+            CoreError::Config(format!(
+                "no se pudieron guardar los metadatos de Gemini: {e}"
+            ))
+        })?;
+        let external_id = user.id.or(user.email.clone());
+        let account = Account {
+            id: account_id.clone(),
+            provider_id: gemini_subscription::PROVIDER.into(),
+            credential_kind: CredentialKind::SubscriptionOauth,
+            label: user
+                .email
+                .clone()
+                .map(|email| format!("{} ({email})", gemini_subscription::DISPLAY_NAME))
+                .unwrap_or_else(|| gemini_subscription::DISPLAY_NAME.into()),
+            keychain_ref: Some(SecretRef::access(&account_id).as_str().to_string()),
+            external_id,
+            scopes: Some(gemini_subscription::SCOPES.join(" ")),
+            expires_at: Some(tokens.expires_at_ms()),
+            status: status.into(),
+            risk_ack_at: Some(risk_acknowledged_at),
+            created_at: util::now_ms(),
+            last_used_at: None,
+            provider_metadata: Some(metadata),
+        };
+        self.db.upsert_account(&account)?;
+
+        if status == "active" {
+            for result in self.refresh_catalog_from_providers().await {
+                if result.provider_id == gemini_subscription::PROVIDER {
+                    if let Some(error) = &result.error {
+                        tracing::warn!(%error, "no se pudo descubrir el catálogo de Gemini tras conectar");
+                    }
+                }
+            }
+        }
+        tracing::info!(account = %account.id, "cuenta de suscripción de Gemini conectada");
         Ok(account)
     }
 
@@ -816,13 +990,17 @@ impl Nexo {
             credential_kind: CredentialKind::ApiKey,
             label: label.unwrap_or("OpenAI (API key)").to_string(),
             keychain_ref: Some(SecretRef::api_key(&account_id).as_str().to_string()),
-            external_id: Some(format!("apikey-{}", &util::sha256_hex(key.as_bytes())[..12])),
+            external_id: Some(format!(
+                "apikey-{}",
+                &util::sha256_hex(key.as_bytes())[..12]
+            )),
             scopes: None,
             expires_at: None,
             status: "active".into(),
             risk_ack_at: None,
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         };
         self.db.upsert_account(&account)?;
         Ok(account)
@@ -855,7 +1033,10 @@ impl Nexo {
         // posibilidad de volver a copiar la clave más tarde, el mismo estado
         // en el que quedaba cualquier aplicación antes de este cambio.
         let mut issued = issued;
-        match self.secrets.set(&SecretRef::app_token(&issued.app.id), &issued.token) {
+        match self
+            .secrets
+            .set(&SecretRef::app_token(&issued.app.id), &issued.token)
+        {
             Ok(()) => issued.recoverable = true,
             Err(e) => {
                 // Antes esto se quedaba solo aquí, y el usuario no lo sabía
@@ -934,6 +1115,7 @@ impl Nexo {
                 // servidor. Descartarla dejaba al adaptador usando la que leyó al
                 // arrancar, así que cambiar la dirección no surtía efecto.
                 external_id: account.external_id.clone(),
+                provider_metadata: account.provider_metadata.clone(),
             }),
             CredentialKind::ApiKey => {
                 let secret = self
@@ -953,6 +1135,7 @@ impl Nexo {
                     kind: account.credential_kind,
                     secret,
                     external_id: account.external_id.clone(),
+                    provider_metadata: account.provider_metadata.clone(),
                 })
             }
             CredentialKind::SubscriptionOauth => self.resolve_oauth(account).await,
@@ -977,17 +1160,21 @@ impl Nexo {
         let current = self
             .db
             .account(&account.id)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?
             .ok_or_else(|| AdapterError::Auth {
                 reason: "la cuenta ya no existe".into(),
                 reauth_required: true,
             })?;
 
         if !current.is_expired(REFRESH_SKEW_MS) {
-            if let Some(secret) = self
-                .secrets
-                .get(&SecretRef::access(&current.id))
-                .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+            if let Some(secret) =
+                self.secrets
+                    .get(&SecretRef::access(&current.id))
+                    .map_err(|e| AdapterError::Transport {
+                        detail: e.to_string(),
+                    })?
             {
                 return Ok(ResolvedCredential {
                     account_id: current.id.clone(),
@@ -995,6 +1182,7 @@ impl Nexo {
                     kind: current.credential_kind,
                     secret,
                     external_id: current.external_id.clone(),
+                    provider_metadata: current.provider_metadata.clone(),
                 });
             }
         }
@@ -1002,11 +1190,51 @@ impl Nexo {
         let refresh_token = self
             .secrets
             .get(&SecretRef::refresh(&current.id))
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?
             .ok_or_else(|| AdapterError::Auth {
-                reason: "no hay refresh token: vuelve a conectar la cuenta de ChatGPT".into(),
+                reason: format!(
+                    "no hay refresh token: vuelve a conectar la cuenta de {}",
+                    current.label
+                ),
                 reauth_required: true,
             })?;
+
+        if current.provider_id == gemini_subscription::PROVIDER {
+            let tokens = gemini_subscription::refresh(&self.http, &refresh_token)
+                .await
+                .map_err(|e| {
+                    let _ = self.db.set_account_status(&current.id, "expired");
+                    AdapterError::Auth {
+                        reason: format!("no se pudo renovar la autorización de Gemini: {e}"),
+                        reauth_required: true,
+                    }
+                })?;
+            self.secrets
+                .set(&SecretRef::access(&current.id), &tokens.access_token)
+                .map_err(|e| AdapterError::Transport {
+                    detail: e.to_string(),
+                })?;
+            if let Some(new_refresh) = &tokens.refresh_token {
+                let _ = self
+                    .secrets
+                    .set(&SecretRef::refresh(&current.id), new_refresh);
+            }
+            let _ = self.db.set_account_tokens_meta(
+                &current.id,
+                tokens.expires_at_ms(),
+                current.external_id.as_deref(),
+            );
+            return Ok(ResolvedCredential {
+                account_id: current.id.clone(),
+                provider_id: current.provider_id.clone(),
+                kind: current.credential_kind,
+                secret: tokens.access_token,
+                external_id: current.external_id.clone(),
+                provider_metadata: current.provider_metadata.clone(),
+            });
+        }
 
         let tokens = chatgpt::refresh(&self.http, &refresh_token)
             .await
@@ -1020,7 +1248,9 @@ impl Nexo {
 
         self.secrets
             .set(&SecretRef::access(&current.id), &tokens.access_token)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?;
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?;
         if let Some(new_refresh) = &tokens.refresh_token {
             let _ = self
                 .secrets
@@ -1039,6 +1269,7 @@ impl Nexo {
             kind: current.credential_kind,
             secret: tokens.access_token,
             external_id,
+            provider_metadata: current.provider_metadata.clone(),
         })
     }
 
@@ -1168,8 +1399,8 @@ impl Nexo {
             {
                 continue;
             }
-            let kind = CredentialKind::parse(&row.credential_kind)
-                .unwrap_or(CredentialKind::ApiKey);
+            let kind =
+                CredentialKind::parse(&row.credential_kind).unwrap_or(CredentialKind::ApiKey);
             let connected = kind == CredentialKind::Mock
                 || accounts.iter().any(|a| {
                     a.provider_id == row.provider_id
@@ -1213,13 +1444,12 @@ impl Nexo {
         let mut seen: Vec<GrantableRoute> = Vec::new();
 
         for row in self.db.catalog_rows()? {
-            let kind = CredentialKind::parse(&row.credential_kind)
-                .unwrap_or(CredentialKind::ApiKey);
+            let kind =
+                CredentialKind::parse(&row.credential_kind).unwrap_or(CredentialKind::ApiKey);
 
-            if let Some(existing) = seen
-                .iter_mut()
-                .find(|r| r.provider_id == row.provider_id && r.credential_kind == row.credential_kind)
-            {
+            if let Some(existing) = seen.iter_mut().find(|r| {
+                r.provider_id == row.provider_id && r.credential_kind == row.credential_kind
+            }) {
                 existing.models += 1;
                 continue;
             }
@@ -1321,9 +1551,9 @@ impl Nexo {
     pub fn connect_options(&self) -> Result<Vec<ConnectOption>> {
         let accounts = self.db.accounts()?;
         let connected = |provider: &str, kind: CredentialKind| {
-            accounts
-                .iter()
-                .any(|a| a.provider_id == provider && a.credential_kind == kind && a.status != "revoked")
+            accounts.iter().any(|a| {
+                a.provider_id == provider && a.credential_kind == kind && a.status != "revoked"
+            })
         };
         let saved = self.db.settings().unwrap_or_default();
         let lmstudio_url = saved.lmstudio_base_url;
@@ -1339,6 +1569,16 @@ impl Nexo {
                 note: None,
                 already_connected: connected("openai", CredentialKind::SubscriptionOauth),
                 docs_url: None,
+            },
+            ConnectOption {
+                id: AdapterId::new(gemini_subscription::PROVIDER, CredentialKind::SubscriptionOauth).slug(),
+                provider_id: gemini_subscription::PROVIDER.into(),
+                name: gemini_subscription::DISPLAY_NAME.into(),
+                summary: "Usa la cuota incluida en tu cuenta de Google, sin API key ni facturación por token.".into(),
+                form: ConnectForm::SubscriptionOauth,
+                note: route_note(gemini_subscription::PROVIDER, CredentialKind::SubscriptionOauth),
+                already_connected: connected(gemini_subscription::PROVIDER, CredentialKind::SubscriptionOauth),
+                docs_url: Some("https://antigravity.google/".into()),
             },
             ConnectOption {
                 id: AdapterId::new("lmstudio", CredentialKind::Local).slug(),
@@ -1378,7 +1618,8 @@ impl Nexo {
                 id: format!("preset:{}", util::slugify(preset.suggested_name)),
                 provider_id: util::slugify(preset.suggested_name),
                 name: preset.suggested_name.to_string(),
-                summary: "Atajo con la dirección ya rellena: solo tienes que pegar la clave.".into(),
+                summary: "Atajo con la dirección ya rellena: solo tienes que pegar la clave."
+                    .into(),
                 form: ConnectForm::CompatEndpoint {
                     suggested_name: preset.suggested_name.to_string(),
                     base_url: preset.base_url.to_string(),
@@ -1445,7 +1686,10 @@ impl Nexo {
             .into_iter()
             .filter(|r| r.provider_id == provider_id && r.credential_kind == kind.as_str())
             .map(|r| RouteModel {
-                selected: all || route_grants.iter().any(|g| g.model_pattern == r.public_name),
+                selected: all
+                    || route_grants
+                        .iter()
+                        .any(|g| g.model_pattern == r.public_name),
                 missing: false,
                 // El nivel vive en la fila de ESTE modelo, no en las de la vía:
                 // se busca por nombre exacto y no se hereda del comodín, que no
@@ -1573,7 +1817,9 @@ impl Nexo {
         let resolved = self
             .db
             .resolve_model(&requested, None)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?
             .ok_or_else(|| AdapterError::Unsupported {
                 capability: "model".into(),
                 hint: Some(format!(
@@ -1612,11 +1858,8 @@ impl Nexo {
 
         Ok(Prepared {
             app_id: app_id.to_string(),
-            adapter_slug: AdapterId::new(
-                resolved.provider_id.clone(),
-                resolved.credential_kind,
-            )
-            .slug(),
+            adapter_slug: AdapterId::new(resolved.provider_id.clone(), resolved.credential_kind)
+                .slug(),
             accounting: resolved.accounting_enum(),
             account_id: account.map(|a| a.id),
             resolved,
@@ -1641,6 +1884,7 @@ impl Nexo {
                     kind: CredentialKind::Mock,
                     secret: String::new(),
                     external_id: None,
+                    provider_metadata: None,
                 },
             ));
         }
@@ -1648,7 +1892,9 @@ impl Nexo {
         let account = self
             .db
             .account_for(&resolved.provider_id, resolved.credential_kind)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?
             .ok_or_else(|| AdapterError::Auth {
                 reason: format!(
                     "no hay ninguna cuenta de {} conectada por la vía {}. Conéctala en Nexo.",
@@ -1669,7 +1915,10 @@ impl Nexo {
         prepared: &Prepared,
     ) -> std::result::Result<EventStream, AdapterError> {
         let adapter = self
-            .adapter_for(&prepared.resolved.provider_id, prepared.resolved.credential_kind)
+            .adapter_for(
+                &prepared.resolved.provider_id,
+                prepared.resolved.credential_kind,
+            )
             .ok_or_else(|| AdapterError::Transport {
                 detail: format!("no hay adaptador para {}", prepared.adapter_slug),
             })?;
@@ -1684,14 +1933,39 @@ impl Nexo {
                     error = %err,
                     "la vía de suscripción falló; se intenta el respaldo por API key"
                 );
-                if let Some(account) = self.db.account_for("openai", CredentialKind::ApiKey).ok().flatten() {
+                let fallback_provider = match prepared.resolved.provider_id.as_str() {
+                    "openai" => "openai",
+                    "gemini_subscription" => "gemini",
+                    _ => return Err(err),
+                };
+                let equivalent_model = self
+                    .db
+                    .catalog_rows()
+                    .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+                    .into_iter()
+                    .any(|row| {
+                        row.provider_id == fallback_provider
+                            && row.credential_kind == CredentialKind::ApiKey.as_str()
+                            && row.api_id == prepared.resolved.api_id
+                            && row.available
+                    });
+                if !equivalent_model {
+                    return Err(err);
+                }
+                if let Some(account) = self
+                    .db
+                    .account_for(fallback_provider, CredentialKind::ApiKey)
+                    .ok()
+                    .flatten()
+                {
                     let _ = self.db.set_account_status(
                         prepared.account_id.as_deref().unwrap_or_default(),
                         "broken",
                     );
                     let cred = self.resolve_credential(&account).await?;
-                    let slug = AdapterId::new("openai", CredentialKind::ApiKey).slug();
-                    if let Some(fallback) = self.adapters.get(&slug) {
+                    if let Some(fallback) =
+                        self.adapter_for(fallback_provider, CredentialKind::ApiKey)
+                    {
                         return fallback.stream(&prepared.req, &cred).await;
                     }
                 }
@@ -1780,7 +2054,12 @@ impl Nexo {
                 .iter()
                 .any(|a| a.credential_kind == CredentialKind::ApiKey && a.status == "active"),
             broken_accounts: accounts.iter().filter(|a| a.status == "broken").count(),
-            apps: self.db.apps()?.iter().filter(|a| a.revoked_at.is_none()).count(),
+            apps: self
+                .db
+                .apps()?
+                .iter()
+                .filter(|a| a.revoked_at.is_none())
+                .count(),
             apps_missing_limits: self.db.apps_missing_mandatory_limits()?,
             manifest_version: catalog::MANIFEST_VERSION.to_string(),
             lan: self.lan_info(),
@@ -1969,19 +2248,22 @@ impl Collector {
     /// OpenAI por API key y LM Studio, mientras la vía de suscripción sí daba
     /// una cifra creíble porque su formato emite un evento antes del contenido.
     pub fn since(started: Instant) -> Self {
-        Self { started: Some(started), ..Default::default() }
+        Self {
+            started: Some(started),
+            ..Default::default()
+        }
     }
 
     pub fn observe(&mut self, event: &ChatEvent) {
         match event {
-            ChatEvent::Started { provider_request_id } => {
+            ChatEvent::Started {
+                provider_request_id,
+            } => {
                 self.provider_request_id = provider_request_id.clone();
             }
             ChatEvent::TextDelta { .. } | ChatEvent::ReasoningDelta { .. } => {
                 if self.ttft_ms.is_none() {
-                    self.ttft_ms = self
-                        .started
-                        .map(|s| s.elapsed().as_millis() as i64);
+                    self.ttft_ms = self.started.map(|s| s.elapsed().as_millis() as i64);
                 }
             }
             ChatEvent::Usage(u) => self.usage = Some(u.clone()),
@@ -2056,7 +2338,10 @@ pub enum ConnectForm {
     /// Nombre, dirección y clave. Los dos primeros vienen rellenos si es un atajo,
     /// pero siguen siendo editables: prefijar es una comodidad, no un candado, y si
     /// el proveedor cambia su dirección el usuario tiene que poder corregirla.
-    CompatEndpoint { suggested_name: String, base_url: String },
+    CompatEndpoint {
+        suggested_name: String,
+        base_url: String,
+    },
 }
 
 /// Una vía que el usuario puede dar de alta.
@@ -2095,6 +2380,12 @@ fn route_note(provider_id: &str, kind: CredentialKind) -> Option<String> {
         ("openai", CredentialKind::ApiKey) => Some(
             "Se guarda en el Keychain del sistema, nunca en la base de datos ni en un \
              fichero."
+                .into(),
+        ),
+        ("gemini_subscription", CredentialKind::SubscriptionOauth) => Some(
+            "Nexo usará la autorización de Google para Antigravity/Code Assist y la cuota de tu cuenta. \
+             No se guardan cookies ni contraseñas del navegador; el token queda en el Keychain. \
+             No necesitas configurar Google Cloud para una cuenta personal."
                 .into(),
         ),
         _ => None,
@@ -2284,8 +2575,8 @@ pub struct GatewayBindPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::MemorySecretStore;
     use crate::provider::ModelDescriptor;
+    use crate::secrets::MemorySecretStore;
 
     fn nexo() -> Arc<Nexo> {
         Nexo::new(
@@ -2304,7 +2595,8 @@ mod tests {
     #[test]
     fn old_requests_are_pruned_automatically_on_startup() {
         let db = Db::open_in_memory().unwrap();
-        let secrets = Arc::new(MemorySecretStore::default()) as Arc<dyn crate::secrets::SecretStore>;
+        let secrets =
+            Arc::new(MemorySecretStore::default()) as Arc<dyn crate::secrets::SecretStore>;
 
         // Retención corta, para no depender del valor por defecto.
         let mut settings = db.settings().unwrap();
@@ -2344,7 +2636,10 @@ mod tests {
         })
         .unwrap();
         assert!(
-            db.recent_requests(0, 10).unwrap().iter().any(|r| r.id == old_id),
+            db.recent_requests(0, 10)
+                .unwrap()
+                .iter()
+                .any(|r| r.id == old_id),
             "el evento viejo debe existir antes de reiniciar"
         );
 
@@ -2352,7 +2647,10 @@ mod tests {
         Nexo::new(db.clone(), secrets).unwrap();
 
         assert!(
-            !db.recent_requests(0, 50).unwrap().iter().any(|r| r.id == old_id),
+            !db.recent_requests(0, 50)
+                .unwrap()
+                .iter()
+                .any(|r| r.id == old_id),
             "un reinicio debe podar lo que ya supera la retención configurada, sin \
              que el usuario tenga que pulsar nada"
         );
@@ -2362,7 +2660,10 @@ mod tests {
     fn lmstudio_setting_roundtrips_with_a_sane_default() {
         let n = nexo();
         let s = n.db().settings().unwrap();
-        assert_eq!(s.lmstudio_base_url, crate::provider::lmstudio::DEFAULT_BASE_URL);
+        assert_eq!(
+            s.lmstudio_base_url,
+            crate::provider::lmstudio::DEFAULT_BASE_URL
+        );
 
         let mut changed = s.clone();
         changed.lmstudio_base_url = "http://localhost:4321".into();
@@ -2383,7 +2684,10 @@ mod tests {
 
         let status = n.detect_lmstudio().await.unwrap();
         assert!(!status.reachable);
-        assert!(status.detail.is_some(), "hay que decir por qué no se conectó");
+        assert!(
+            status.detail.is_some(),
+            "hay que decir por qué no se conectó"
+        );
         assert!(
             n.db()
                 .account_for("lmstudio", CredentialKind::Local)
@@ -2397,7 +2701,9 @@ mod tests {
     fn catalog_is_populated_on_start_for_both_routes() {
         let n = nexo();
         let rows = n.db().catalog_rows().unwrap();
-        assert!(rows.iter().any(|r| r.credential_kind == "subscription_oauth"));
+        assert!(rows
+            .iter()
+            .any(|r| r.credential_kind == "subscription_oauth"));
         assert!(rows.iter().any(|r| r.credential_kind == "api_key"));
         assert!(rows.iter().any(|r| r.credential_kind == "mock"));
     }
@@ -2556,6 +2862,7 @@ mod tests {
                 risk_ack_at: Some(1),
                 created_at: 0,
                 last_used_at: None,
+                provider_metadata: None,
             })
             .unwrap();
 
@@ -2775,7 +3082,9 @@ mod tests {
     #[test]
     fn collector_measures_ttft_on_first_delta_only() {
         let mut c = Collector::new();
-        c.observe(&ChatEvent::Started { provider_request_id: Some("r".into()) });
+        c.observe(&ChatEvent::Started {
+            provider_request_id: Some("r".into()),
+        });
         assert_eq!(c.ttft_ms(), None);
         c.observe(&ChatEvent::TextDelta { text: "a".into() });
         let first = c.ttft_ms();
@@ -2806,9 +3115,15 @@ mod tests {
             .unwrap();
         assert_eq!(p.id, "opencode-zen");
 
-        let account = n.db().account_for("opencode-zen", CredentialKind::ApiKey).unwrap();
+        let account = n
+            .db()
+            .account_for("opencode-zen", CredentialKind::ApiKey)
+            .unwrap();
         let account = account.expect("debe crear la cuenta");
-        assert_eq!(account.external_id.as_deref(), Some("https://opencode.ai/zen/v1"));
+        assert_eq!(
+            account.external_id.as_deref(),
+            Some("https://opencode.ai/zen/v1")
+        );
 
         // La clave se busca por el id de la CUENTA, como cualquier otra API key.
         let secret = n.secrets().get(&SecretRef::api_key(&account.id)).unwrap();
@@ -2828,7 +3143,9 @@ mod tests {
     #[tokio::test]
     async fn duplicate_provider_name_does_not_leave_an_orphan_account_or_secret() {
         let n = nexo();
-        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a")
+            .await
+            .unwrap();
         assert!(n
             .add_custom_provider("Runpod", "https://b.example/v1", "sk-b")
             .await
@@ -2840,12 +3157,24 @@ mod tests {
     #[tokio::test]
     async fn two_custom_providers_coexist_with_separate_accounts() {
         let n = nexo();
-        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
-        n.add_custom_provider("Together", "https://b.example/v1", "sk-b").await.unwrap();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a")
+            .await
+            .unwrap();
+        n.add_custom_provider("Together", "https://b.example/v1", "sk-b")
+            .await
+            .unwrap();
 
         assert_eq!(n.custom_providers().unwrap().len(), 2);
-        let a = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap();
-        let b = n.db().account_for("together", CredentialKind::ApiKey).unwrap().unwrap();
+        let a = n
+            .db()
+            .account_for("runpod", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap();
+        let b = n
+            .db()
+            .account_for("together", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap();
         assert_ne!(a.id, b.id);
         assert_eq!(a.external_id.as_deref(), Some("https://a.example/v1"));
         assert_eq!(b.external_id.as_deref(), Some("https://b.example/v1"));
@@ -2854,9 +3183,14 @@ mod tests {
     #[test]
     fn adapter_for_falls_back_to_the_generic_adapter_for_a_custom_provider() {
         let n = nexo();
-        n.db().create_custom_provider("Runpod", "https://a.example/v1").unwrap();
+        n.db()
+            .create_custom_provider("Runpod", "https://a.example/v1")
+            .unwrap();
         let adapter = n.adapter_for("runpod", CredentialKind::ApiKey);
-        assert!(adapter.is_some(), "un proveedor añadido debe resolver a un adaptador");
+        assert!(
+            adapter.is_some(),
+            "un proveedor añadido debe resolver a un adaptador"
+        );
     }
 
     #[test]
@@ -2881,7 +3215,9 @@ mod tests {
     #[tokio::test]
     async fn catalog_and_gateway_never_disagree_about_what_is_allowed() {
         let n = nexo();
-        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z").await.unwrap();
+        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z")
+            .await
+            .unwrap();
         // Catálogo de tres modelos por esa vía.
         n.db()
             .replace_models(
@@ -2926,7 +3262,11 @@ mod tests {
             .into_iter()
             .map(|m| m["id"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(listed, vec!["zen/dos"], "el catálogo solo anuncia lo marcado");
+        assert_eq!(
+            listed,
+            vec!["zen/dos"],
+            "el catálogo solo anuncia lo marcado"
+        );
 
         // Y la otra mitad del criterio: cada modelo del catálogo completo se comprueba
         // contra la decisión del gateway, y las dos respuestas coinciden.
@@ -2941,11 +3281,16 @@ mod tests {
             .is_some();
             let catalog_lists = listed.contains(&row.public_name);
             assert_eq!(
-                catalog_lists, gateway_allows,
+                catalog_lists,
+                gateway_allows,
                 "«{}» se lista {} pero el gateway {}",
                 row.public_name,
                 if catalog_lists { "sí" } else { "no" },
-                if gateway_allows { "lo permite" } else { "lo rechaza" }
+                if gateway_allows {
+                    "lo permite"
+                } else {
+                    "lo rechaza"
+                }
             );
         }
     }
@@ -2953,7 +3298,9 @@ mod tests {
     /// Prepara una vía «zen» con tres modelos en catálogo y una cuenta conectada.
     async fn nexo_with_zen_catalog() -> Arc<Nexo> {
         let n = nexo();
-        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z").await.unwrap();
+        n.add_custom_provider("Zen", "https://z.example/v1", "sk-z")
+            .await
+            .unwrap();
         n.db()
             .replace_models(
                 "zen",
@@ -3026,7 +3373,11 @@ mod tests {
         assert_eq!(n.models_for_app(&app.id).unwrap().len(), 1);
 
         // 4. Sin cuenta activa, aunque el permiso siga ahí.
-        let account = n.db().account_for("zen", CredentialKind::ApiKey).unwrap().unwrap();
+        let account = n
+            .db()
+            .account_for("zen", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap();
         n.db().set_account_status(&account.id, "revoked").unwrap();
         assert_eq!(n.empty_catalog_reason(&app.id).unwrap(), "no_account");
     }
@@ -3048,12 +3399,18 @@ mod tests {
             )
             .unwrap();
 
-        let route = n.app_route_models(&app.id, "zen", CredentialKind::ApiKey).unwrap();
+        let route = n
+            .app_route_models(&app.id, "zen", CredentialKind::ApiKey)
+            .unwrap();
         assert!(!route.inherited_all);
         assert_eq!(route.selected, 2);
         assert!(!route.requires_limit, "una vía de API key no exige límite");
 
-        let names: Vec<&str> = route.models.iter().map(|m| m.public_name.as_str()).collect();
+        let names: Vec<&str> = route
+            .models
+            .iter()
+            .map(|m| m.public_name.as_str())
+            .collect();
         assert_eq!(
             names,
             vec!["zen/dos", "zen/tres", "zen/uno", "zen/ya-no-existe"],
@@ -3092,8 +3449,13 @@ mod tests {
 
         assert_eq!(n.models_for_app(&app.id).unwrap().len(), 3);
 
-        let route = n.app_route_models(&app.id, "zen", CredentialKind::ApiKey).unwrap();
-        assert!(route.inherited_all, "la interfaz tiene que poder decir «todos»");
+        let route = n
+            .app_route_models(&app.id, "zen", CredentialKind::ApiKey)
+            .unwrap();
+        assert!(
+            route.inherited_all,
+            "la interfaz tiene que poder decir «todos»"
+        );
         assert_eq!(route.selected, 3);
         assert!(route.models.iter().all(|m| m.selected && !m.missing));
     }
@@ -3109,13 +3471,20 @@ mod tests {
         n.add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", "sk-z")
             .await
             .unwrap();
-        n.connect_openai_api_key("sk-o", Some("OpenAI personal")).unwrap();
+        n.connect_openai_api_key("sk-o", Some("OpenAI personal"))
+            .unwrap();
 
         let rows = n.provider_rows().unwrap();
-        let api_key_rows: Vec<_> = rows.iter().filter(|r| r.credential_kind == "api_key").collect();
+        let api_key_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.credential_kind == "api_key")
+            .collect();
         assert_eq!(api_key_rows.len(), 2, "dos cuentas de API key, dos filas");
 
-        let zen = rows.iter().filter(|r| r.provider_id == "opencode-zen").count();
+        let zen = rows
+            .iter()
+            .filter(|r| r.provider_id == "opencode-zen")
+            .count();
         assert_eq!(zen, 1, "el proveedor propio aparece una sola vez");
         let openai = rows.iter().filter(|r| r.provider_id == "openai").count();
         assert_eq!(openai, 1);
@@ -3141,7 +3510,10 @@ mod tests {
             .filter(|r| r.provider_id == "openai" && r.credential_kind == "api_key")
             .count();
         assert_eq!(row.models, esperado);
-        assert!(row.models > 0, "el catálogo de OpenAI por API key no está vacío");
+        assert!(
+            row.models > 0,
+            "el catálogo de OpenAI por API key no está vacío"
+        );
     }
 
     #[test]
@@ -3158,11 +3530,19 @@ mod tests {
     #[tokio::test]
     async fn provider_rows_put_what_needs_attention_first() {
         let n = nexo();
-        n.add_custom_provider("Alfa", "https://a.example/v1", "sk-a").await.unwrap();
-        n.add_custom_provider("Zeta", "https://z.example/v1", "sk-z").await.unwrap();
+        n.add_custom_provider("Alfa", "https://a.example/v1", "sk-a")
+            .await
+            .unwrap();
+        n.add_custom_provider("Zeta", "https://z.example/v1", "sk-z")
+            .await
+            .unwrap();
 
         // «Zeta» iría última por nombre, pero está rota: tiene que salir primera.
-        let zeta = n.db().account_for("zeta", CredentialKind::ApiKey).unwrap().unwrap();
+        let zeta = n
+            .db()
+            .account_for("zeta", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap();
         n.db().set_account_status(&zeta.id, "broken").unwrap();
 
         let rows = n.provider_rows().unwrap();
@@ -3193,7 +3573,10 @@ mod tests {
             .find(|o| o.name == "OpenAI por API key")
             .unwrap();
 
-        assert!(row.note.is_some(), "la fila trae su nota, no la escribe la vista");
+        assert!(
+            row.note.is_some(),
+            "la fila trae su nota, no la escribe la vista"
+        );
         assert_eq!(row.note, option.note);
     }
 
@@ -3212,7 +3595,9 @@ mod tests {
     #[tokio::test]
     async fn each_row_declares_how_it_is_managed() {
         let n = nexo();
-        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a")
+            .await
+            .unwrap();
         n.connect_openai_api_key("sk-o", None).unwrap();
 
         let rows = n.provider_rows().unwrap();
@@ -3223,7 +3608,10 @@ mod tests {
 
         let openai = rows.iter().find(|r| r.provider_id == "openai").unwrap();
         assert!(matches!(openai.manage, RowManage::Account));
-        assert!(openai.address.is_none(), "OpenAI no tiene dirección que cambiar");
+        assert!(
+            openai.address.is_none(),
+            "OpenAI no tiene dirección que cambiar"
+        );
     }
 
     // -- Vías que se pueden dar de alta (spec 0003) -------------------------
@@ -3245,7 +3633,12 @@ mod tests {
         formas.dedup();
         assert_eq!(
             formas,
-            vec!["api_key", "compat_endpoint", "local_server", "subscription_oauth"],
+            vec![
+                "api_key",
+                "compat_endpoint",
+                "local_server",
+                "subscription_oauth"
+            ],
             "la vista tiene una rama por forma: si aparece una nueva, hay que añadirla"
         );
 
@@ -3258,6 +3651,19 @@ mod tests {
     }
 
     #[test]
+    fn gemini_subscription_is_a_separate_oauth_route() {
+        let option = nexo()
+            .connect_options()
+            .unwrap()
+            .into_iter()
+            .find(|option| option.provider_id == "gemini_subscription")
+            .expect("la suscripción de Gemini debe aparecer en el alta");
+        assert_eq!(option.name, "Gemini por suscripción");
+        assert!(matches!(option.form, ConnectForm::SubscriptionOauth));
+        assert!(option.note.unwrap_or_default().contains("Code Assist"));
+    }
+
+    #[test]
     fn the_opencode_zen_shortcut_arrives_with_its_name_and_address_filled() {
         let options = nexo().connect_options().unwrap();
         let zen = options
@@ -3266,7 +3672,10 @@ mod tests {
             .expect("el atajo de Zen debe ofrecerse");
 
         match &zen.form {
-            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+            ConnectForm::CompatEndpoint {
+                suggested_name,
+                base_url,
+            } => {
                 assert_eq!(suggested_name, "OpenCode Zen");
                 assert_eq!(base_url, "https://opencode.ai/zen/v1");
             }
@@ -3284,7 +3693,10 @@ mod tests {
             .expect("el atajo de OpenRouter debe ofrecerse");
 
         match &openrouter.form {
-            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+            ConnectForm::CompatEndpoint {
+                suggested_name,
+                base_url,
+            } => {
                 assert_eq!(suggested_name, "OpenRouter");
                 assert_eq!(base_url, "https://openrouter.ai/api/v1");
             }
@@ -3305,9 +3717,15 @@ mod tests {
             .expect("el atajo de Gemini debe ofrecerse");
 
         match &gemini.form {
-            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
+            ConnectForm::CompatEndpoint {
+                suggested_name,
+                base_url,
+            } => {
                 assert_eq!(suggested_name, "Gemini");
-                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta/openai");
+                assert_eq!(
+                    base_url,
+                    "https://generativelanguage.googleapis.com/v1beta/openai"
+                );
             }
             other => panic!("Gemini no es un endpoint compatible: {other:?}"),
         }
@@ -3330,8 +3748,14 @@ mod tests {
             .expect("debe haber una opción para un servicio cualquiera");
 
         match &generic.form {
-            ConnectForm::CompatEndpoint { suggested_name, base_url } => {
-                assert!(suggested_name.is_empty(), "el caso general no prerrellena nada");
+            ConnectForm::CompatEndpoint {
+                suggested_name,
+                base_url,
+            } => {
+                assert!(
+                    suggested_name.is_empty(),
+                    "el caso general no prerrellena nada"
+                );
                 assert!(base_url.is_empty());
             }
             _ => unreachable!(),
@@ -3370,7 +3794,11 @@ mod tests {
     #[tokio::test]
     async fn already_connected_tells_the_truth_for_every_option() {
         let n = nexo();
-        assert!(n.connect_options().unwrap().iter().all(|o| !o.already_connected));
+        assert!(n
+            .connect_options()
+            .unwrap()
+            .iter()
+            .all(|o| !o.already_connected));
 
         n.connect_openai_api_key("sk-o", None).unwrap();
         n.add_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1", "sk-z")
@@ -3400,22 +3828,40 @@ mod tests {
                 ConnectForm::ApiKey => "connect_openai_api_key",
                 ConnectForm::CompatEndpoint { .. } => "add_custom_provider",
             };
-            assert!(!comando.is_empty(), "«{}» no tiene comando de alta", option.name);
+            assert!(
+                !comando.is_empty(),
+                "«{}» no tiene comando de alta",
+                option.name
+            );
         }
     }
 
     #[tokio::test]
     async fn removing_a_custom_provider_deletes_its_account_and_secret() {
         let n = nexo();
-        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a").await.unwrap();
-        let account_id = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap().id;
+        n.add_custom_provider("Runpod", "https://a.example/v1", "sk-a")
+            .await
+            .unwrap();
+        let account_id = n
+            .db()
+            .account_for("runpod", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap()
+            .id;
 
         n.remove_custom_provider("runpod").unwrap();
 
         assert!(n.custom_providers().unwrap().is_empty());
-        assert!(n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().is_none());
+        assert!(n
+            .db()
+            .account_for("runpod", CredentialKind::ApiKey)
+            .unwrap()
+            .is_none());
         assert!(
-            n.secrets().get(&SecretRef::api_key(&account_id)).unwrap().is_none(),
+            n.secrets()
+                .get(&SecretRef::api_key(&account_id))
+                .unwrap()
+                .is_none(),
             "la clave debe borrarse del Keychain, no quedar huérfana"
         );
         // Y sin cuenta activa, ya no resuelve a ningún adaptador.
@@ -3425,10 +3871,18 @@ mod tests {
     #[tokio::test]
     async fn updating_the_url_reaches_the_account_the_adapter_actually_reads() {
         let n = nexo();
-        n.add_custom_provider("Runpod", "https://old.example/v1", "sk-a").await.unwrap();
-        n.update_custom_provider_url("runpod", "https://new.example/v1/").await.unwrap();
+        n.add_custom_provider("Runpod", "https://old.example/v1", "sk-a")
+            .await
+            .unwrap();
+        n.update_custom_provider_url("runpod", "https://new.example/v1/")
+            .await
+            .unwrap();
 
-        let account = n.db().account_for("runpod", CredentialKind::ApiKey).unwrap().unwrap();
+        let account = n
+            .db()
+            .account_for("runpod", CredentialKind::ApiKey)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             account.external_id.as_deref(),
             Some("https://new.example/v1"),
@@ -3452,7 +3906,10 @@ mod tests {
     #[test]
     fn prepare_gateway_bind_with_allow_lan_false_changes_nothing() {
         let n = nexo();
-        let settings = Settings { allow_lan: false, ..Default::default() };
+        let settings = Settings {
+            allow_lan: false,
+            ..Default::default()
+        };
 
         let plan = n.prepare_gateway_bind(&settings);
 
@@ -3467,7 +3924,11 @@ mod tests {
     #[test]
     fn lan_mode_plans_a_single_plain_listener() {
         let n = nexo();
-        let settings = Settings { allow_lan: true, port: 9191, ..Default::default() };
+        let settings = Settings {
+            allow_lan: true,
+            port: 9191,
+            ..Default::default()
+        };
         n.db().save_settings(&settings).unwrap();
 
         let plan = n.prepare_gateway_bind(&settings);
@@ -3488,11 +3949,17 @@ mod tests {
     #[test]
     fn lan_info_lists_every_listening_address() {
         let n = nexo();
-        let settings = Settings { allow_lan: true, port: 9393, ..Default::default() };
+        let settings = Settings {
+            allow_lan: true,
+            port: 9393,
+            ..Default::default()
+        };
 
         n.prepare_gateway_bind(&settings);
 
-        let info = n.lan_info().expect("el modo red debe publicar por dónde escucha");
+        let info = n
+            .lan_info()
+            .expect("el modo red debe publicar por dónde escucha");
         assert_eq!(info.port, 9393);
         assert_eq!(
             info.addresses,
@@ -3548,10 +4015,18 @@ mod tests {
     fn an_app_created_without_a_working_store_says_its_key_is_not_recoverable() {
         let n = nexo_with_broken_keychain();
 
-        let issued = n.create_app("sin llavero", None).expect("la app sigue creándose");
+        let issued = n
+            .create_app("sin llavero", None)
+            .expect("la app sigue creándose");
 
-        assert!(!issued.recoverable, "hay que decir que no se podrá recuperar");
-        assert!(!issued.token.is_empty(), "y la clave se entrega igual, esta única vez");
+        assert!(
+            !issued.recoverable,
+            "hay que decir que no se podrá recuperar"
+        );
+        assert!(
+            !issued.token.is_empty(),
+            "y la clave se entrega igual, esta única vez"
+        );
         assert!(
             n.app_token_secret(&issued.app.id).is_err()
                 || n.app_token_secret(&issued.app.id).unwrap().is_none(),
@@ -3567,7 +4042,10 @@ mod tests {
 
         assert!(issued.recoverable);
         assert!(
-            n.status(&Settings::default()).unwrap().secrets_error.is_none(),
+            n.status(&Settings::default())
+                .unwrap()
+                .secrets_error
+                .is_none(),
             "si el almacén funciona, no hay aviso que dar"
         );
         assert_eq!(
@@ -3586,7 +4064,8 @@ mod tests {
         let _ = store.set(&SecretRef::app_token("a1"), "tok");
         assert!(store.last_error().is_some());
 
-        let sano = crate::secrets::ReportingSecretStore::new(Arc::new(MemorySecretStore::default()));
+        let sano =
+            crate::secrets::ReportingSecretStore::new(Arc::new(MemorySecretStore::default()));
         let _ = sano.set(&SecretRef::app_token("a1"), "tok");
         assert!(
             sano.last_error().is_none(),
@@ -3626,7 +4105,9 @@ mod tests {
 
         // Direcciones que no responden: lo que importa aquí es dónde se guardan,
         // no que haya un servidor detrás.
-        let _ = n.set_local_server_url("ollama", "http://127.0.0.1:59991").await;
+        let _ = n
+            .set_local_server_url("ollama", "http://127.0.0.1:59991")
+            .await;
         let _ = n
             .set_local_server_url("lmstudio", "http://127.0.0.1:59992")
             .await;
@@ -3683,7 +4164,10 @@ mod tests {
         let (n, secrets) = nexo_with_secrets();
         let issued = n.create_app("cliente", None).unwrap();
         let key = crate::secrets::SecretRef::app_token(&issued.app.id);
-        assert!(secrets.get(&key).unwrap().is_some(), "precondición: el secreto existe");
+        assert!(
+            secrets.get(&key).unwrap().is_some(),
+            "precondición: el secreto existe"
+        );
 
         n.revoke_app(&issued.app.id).unwrap();
 
@@ -3698,7 +4182,10 @@ mod tests {
         let (n, secrets) = nexo_with_secrets();
         let issued = n.create_app("cliente", None).unwrap();
         let key = crate::secrets::SecretRef::app_token(&issued.app.id);
-        assert!(secrets.get(&key).unwrap().is_some(), "precondición: el secreto existe");
+        assert!(
+            secrets.get(&key).unwrap().is_some(),
+            "precondición: el secreto existe"
+        );
 
         n.delete_app(&issued.app.id).unwrap();
 

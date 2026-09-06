@@ -17,6 +17,7 @@
   let rows = $state<ProviderRow[]>([]);
   let options = $state<ConnectOption[]>([]);
   let notice = $state<RiskNotice | null>(null);
+  let geminiNotice = $state<RiskNotice | null>(null);
   let lmstudio = $state<LmStudioStatus | null>(null);
 
   let error = $state<string | null>(null);
@@ -37,10 +38,11 @@
 
   async function load() {
     try {
-      [rows, options, notice] = await Promise.all([
+      [rows, options, notice, geminiNotice] = await Promise.all([
         api.providerRows(),
         api.connectOptions(),
         api.riskNotice(),
+        api.geminiRiskNotice(),
       ]);
       error = null;
     } catch (e) {
@@ -159,12 +161,13 @@
   // -- Alta -----------------------------------------------------------------
 
   function connectSubscription(option: ConnectOption) {
-    // `connectChatgpt` es específico de ChatGPT, la única vía de suscripción que
-    // existe hoy. Cuando haya otra (Gemini por OAuth está en el ROADMAP) hará falta
-    // un comando por proveedor: la forma del formulario se comparte, el flujo no.
+    const connect =
+      option.provider_id === "gemini_subscription"
+        ? api.connectGeminiSubscription
+        : api.connectChatgpt;
     run(
       async () => {
-        await api.connectChatgpt(true);
+        await connect(true);
         closeAdd();
       },
       {
@@ -213,6 +216,9 @@
   }
 
   const chosen = $derived(options.find((o) => o.id === adding) ?? null);
+  const chosenNotice = $derived(
+    chosen?.provider_id === "gemini_subscription" ? geminiNotice : notice,
+  );
 
   $effect(() => {
     load();
@@ -266,6 +272,8 @@
             <span class="badge warn">
               {row.credential_kind === "local" ? "Servidor apagado" : "Caducada"}
             </span>
+          {:else if row.status === "degraded"}
+            <span class="badge warn">Pendiente de activación</span>
           {:else}
             <span class="badge warn">{row.status}</span>
           {/if}
@@ -363,17 +371,17 @@
           {/if}
 
           {#if chosen.form.kind === "subscription_oauth"}
-            {#if notice}
+            {#if chosenNotice}
               <div class="risk">
-                <h3>{notice.title}</h3>
+                <h3>{chosenNotice.title}</h3>
                 <ul>
-                  {#each notice.points as point}
+                  {#each chosenNotice.points as point}
                     <li>{point}</li>
                   {/each}
                 </ul>
                 <label class="check">
                   <input type="checkbox" bind:checked={riskAccepted} />
-                  <span>{notice.confirm_label}</span>
+                  <span>{chosenNotice.confirm_label}</span>
                 </label>
               </div>
             {/if}
