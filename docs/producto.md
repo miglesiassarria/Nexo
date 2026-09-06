@@ -70,10 +70,12 @@ ChatGPT, no la API pública, así que la traducción de formatos es el caso base
 producto y no una excepción. Está validada contra una cuenta real: ver la
 sección de validación del [ADR 0001](adr/0001-oauth-de-suscripcion.md).
 
-**Google y Gemini** entra con OAuth para la Gemini API cuando el usuario tenga un
-proyecto de Google Cloud. La autorización de la API y una suscripción de la
-aplicación Gemini son cosas distintas: el diseño no asume que una suscripción de
-consumidor se convierta en cuota de API.
+**Google y Gemini** tiene dos vías separadas. La API key usa la API pública de
+Gemini y se factura según sus reglas. «Gemini por suscripción» usa OAuth del
+cliente Antigravity y el backend Code Assist (`v1internal`) para
+consumir la cuota del plan de Google; no es la API pública ni comparte su
+catálogo o proyecto. La segunda vía puede romperse si Google cambia ese flujo,
+por eso tiene aviso, límites por aplicación y contabilidad de suscripción.
 
 **Anthropic y Claude** queda como proveedor futuro con las dos vías. Su flujo de
 suscripción necesita una investigación propia desde cero y no se deriva del de

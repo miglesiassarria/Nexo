@@ -4,8 +4,8 @@
 use crate::state::{map_err, AppState, CmdResult};
 use nexo_core::apps::{App, Grant, IssuedApp, Limit};
 use nexo_core::config::Settings;
-use nexo_core::db::{Account, CatalogRow, CustomProvider};
 use nexo_core::db::stats::{GroupBy, RequestRow, UsageBucket};
+use nexo_core::db::{Account, CatalogRow, CustomProvider};
 use nexo_core::provider::lmstudio::{LmStudioStatus, LocalModelDetail};
 use nexo_core::provider::CredentialKind;
 use nexo_core::service::{
@@ -44,8 +44,7 @@ pub fn list_accounts(state: State<'_, AppState>) -> CmdResult<Vec<Account>> {
 #[tauri::command]
 pub fn risk_notice() -> RiskNotice {
     RiskNotice {
-        title: "Vas a conectar tu suscripción de ChatGPT por una vía no soportada"
-            .into(),
+        title: "Vas a conectar tu suscripción de ChatGPT por una vía no soportada".into(),
         points: vec![
             "OpenAI no ofrece un mecanismo oficial para que aplicaciones de terceros \
              usen la cuota de una suscripción. Nexo reutiliza el flujo OAuth de su \
@@ -60,8 +59,21 @@ pub fn risk_notice() -> RiskNotice {
             "Nexo reparte una única cuota personal entre todas las aplicaciones que \
              conectes. Por eso los límites por aplicación son obligatorios en esta vía."
                 .into(),
-            "Nexo se identifica ante OpenAI como Nexo. No suplanta a otro cliente."
-                .into(),
+            "Nexo se identifica ante OpenAI como Nexo. No suplanta a otro cliente.".into(),
+        ],
+        confirm_label: "Entiendo el riesgo y quiero continuar".into(),
+    }
+}
+
+#[tauri::command]
+pub fn gemini_risk_notice() -> RiskNotice {
+    RiskNotice {
+        title: "Vas a conectar tu suscripción de Gemini por una vía no soportada por Google".into(),
+        points: vec![
+            "Nexo usará la ruta de Antigravity para aprovechar la cuota de tu suscripción, pero Google no ofrece una API pública para que aplicaciones de terceros la usen directamente.".into(),
+            "Puede dejar de funcionar si Google cambia el flujo OAuth o el backend de Antigravity. Si necesitas continuidad, conserva una API key como respaldo independiente.".into(),
+            "La cuota de tu cuenta de Google se compartirá entre Nexo y cualquier otro cliente que la use. Nexo aplica límites por aplicación para evitar que una sola herramienta la consuma entera.".into(),
+            "Para una cuenta personal no necesitas configurar Google Cloud. Nexo no usa cookies, contraseñas ni archivos de sesión del navegador: guarda el token OAuth en el almacén seguro del sistema.".into(),
         ],
         confirm_label: "Entiendo el riesgo y quiero continuar".into(),
     }
@@ -113,12 +125,27 @@ pub async fn connect_chatgpt(
     risk_acknowledged: bool,
 ) -> CmdResult<Account> {
     if !risk_acknowledged {
-        return Err(
-            "hay que aceptar el aviso de riesgo antes de conectar la suscripción".into(),
-        );
+        return Err("hay que aceptar el aviso de riesgo antes de conectar la suscripción".into());
     }
     let nexo = state.nexo.clone();
     nexo.connect_chatgpt_subscription(util::now_ms(), |url| {
+        open::that(url).map_err(nexo_core::CoreError::Io)
+    })
+    .await
+    .map_err(map_err)
+}
+
+/// Conecta la suscripción de Gemini tras la aceptación explícita del aviso.
+#[tauri::command]
+pub async fn connect_gemini_subscription(
+    state: State<'_, AppState>,
+    risk_acknowledged: bool,
+) -> CmdResult<Account> {
+    if !risk_acknowledged {
+        return Err("hay que aceptar el aviso de riesgo antes de conectar la suscripción".into());
+    }
+    let nexo = state.nexo.clone();
+    nexo.connect_gemini_subscription(util::now_ms(), |url| {
         open::that(url).map_err(nexo_core::CoreError::Io)
     })
     .await
@@ -183,7 +210,9 @@ pub async fn detect_local_server(
     provider_id: String,
 ) -> CmdResult<LocalServerStatus> {
     let nexo = state.nexo.clone();
-    nexo.detect_local_server(&provider_id).await.map_err(map_err)
+    nexo.detect_local_server(&provider_id)
+        .await
+        .map_err(map_err)
 }
 
 /// Cambia la dirección de un servidor local y vuelve a detectarlo.
@@ -251,7 +280,9 @@ pub async fn update_custom_provider_url(
     base_url: String,
 ) -> CmdResult<()> {
     let nexo = state.nexo.clone();
-    nexo.update_custom_provider_url(&id, &base_url).await.map_err(map_err)
+    nexo.update_custom_provider_url(&id, &base_url)
+        .await
+        .map_err(map_err)
 }
 
 /// Borra el proveedor, su cuenta y su clave del Keychain.
@@ -279,7 +310,10 @@ pub fn create_app(
     name: String,
     notes: Option<String>,
 ) -> CmdResult<IssuedApp> {
-    state.nexo.create_app(&name, notes.as_deref()).map_err(map_err)
+    state
+        .nexo
+        .create_app(&name, notes.as_deref())
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -432,7 +466,9 @@ pub fn save_settings(
         );
     }
     if let Some(bytes) = settings.max_request_body_bytes {
-        if !(nexo_core::db::MIN_MAX_REQUEST_BODY_BYTES..=nexo_core::db::MAX_MAX_REQUEST_BODY_BYTES).contains(&bytes) {
+        if !(nexo_core::db::MIN_MAX_REQUEST_BODY_BYTES..=nexo_core::db::MAX_MAX_REQUEST_BODY_BYTES)
+            .contains(&bytes)
+        {
             return Err("el tamaño máximo de petición debe estar entre 1 MiB y 5 GiB".into());
         }
     }

@@ -73,7 +73,10 @@ pub struct OpenAiCompatAdapter {
 }
 
 impl OpenAiCompatAdapter {
-    pub fn new(http: reqwest::Client, models_dev: Arc<tokio::sync::RwLock<ModelsDevCatalog>>) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        models_dev: Arc<tokio::sync::RwLock<ModelsDevCatalog>>,
+    ) -> Self {
         Self { http, models_dev }
     }
 
@@ -123,7 +126,11 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(chat_completions::classify_http_error(status.as_u16(), None, &text));
+            return Err(chat_completions::classify_http_error(
+                status.as_u16(),
+                None,
+                &text,
+            ));
         }
 
         let body: Value = resp.json().await.map_err(AdapterError::from_reqwest)?;
@@ -154,7 +161,12 @@ impl ProviderAdapter for OpenAiCompatAdapter {
                 let bare = ModelDescriptor {
                     api_id: id.clone(),
                     public_name: format!("{}/{id}", cred.provider_id),
-                    caps: Capabilities { text: true, json_mode: true, streaming: true, ..Default::default() },
+                    caps: Capabilities {
+                        text: true,
+                        json_mode: true,
+                        streaming: true,
+                        ..Default::default()
+                    },
                     limits: Limits::default(),
                     accounting: Accounting::Metered,
                     pricing: None,
@@ -203,7 +215,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
     }
 
     async fn health(&self, cred: &ResolvedCredential) -> Health {
-        let Ok(base) = Self::base_url(cred) else { return Health::Down };
+        let Ok(base) = Self::base_url(cred) else {
+            return Health::Down;
+        };
         match self
             .http
             .get(format!("{base}/models"))
@@ -245,6 +259,7 @@ mod tests {
             kind: CREDENTIAL_KIND,
             secret: "sk-test".into(),
             external_id: external_id.map(str::to_string),
+            provider_metadata: None,
         }
     }
 
@@ -271,7 +286,8 @@ mod tests {
 
     #[test]
     fn unreachable_error_names_the_address_and_what_to_do() {
-        let err = OpenAiCompatAdapter::unreachable("https://runpod.example/v1", "connection refused");
+        let err =
+            OpenAiCompatAdapter::unreachable("https://runpod.example/v1", "connection refused");
         let text = err.to_string();
         assert!(text.contains("runpod.example"));
         assert!(text.contains("activo"));
@@ -289,7 +305,10 @@ mod tests {
         });
         assert_eq!(
             parse_model_ids(&body),
-            vec!["claude-fable-5".to_string(), "deepseek-v4-flash-free".to_string()]
+            vec![
+                "claude-fable-5".to_string(),
+                "deepseek-v4-flash-free".to_string()
+            ]
         );
     }
 
@@ -339,7 +358,10 @@ mod tests {
         });
         let ids = parse_model_ids(&body);
         let cred = cred(None);
-        let names: Vec<String> = ids.iter().map(|id| format!("{}/{id}", cred.provider_id)).collect();
+        let names: Vec<String> = ids
+            .iter()
+            .map(|id| format!("{}/{id}", cred.provider_id))
+            .collect();
         assert_eq!(
             names,
             vec![
@@ -351,7 +373,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_without_an_address_is_down_not_a_panic() {
-        assert_eq!(adapter().health(&cred(None)).await, crate::provider::Health::Down);
+        assert_eq!(
+            adapter().health(&cred(None)).await,
+            crate::provider::Health::Down
+        );
     }
 
     /// Reproduce el fallo real reportado con OpenRouter: un modelo `:free` da

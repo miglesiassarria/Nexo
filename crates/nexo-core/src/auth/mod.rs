@@ -2,6 +2,7 @@
 
 pub mod callback;
 pub mod chatgpt;
+pub mod gemini_subscription;
 
 use crate::util;
 

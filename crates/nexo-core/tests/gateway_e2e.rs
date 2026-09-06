@@ -1169,6 +1169,7 @@ async fn a_local_server_that_is_down_gives_a_useful_error_not_a_generic_502() {
             risk_ack_at: None,
             created_at: 0,
             last_used_at: None,
+            provider_metadata: None,
         })
         .unwrap();
 

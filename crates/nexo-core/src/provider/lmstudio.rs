@@ -82,7 +82,6 @@ impl LmStudioAdapter {
             ),
         }
     }
-
 }
 
 #[async_trait]
@@ -246,8 +245,7 @@ pub async fn probe(http: &reqwest::Client, base_url: &str) -> LmStudioStatus {
             models: 0,
             loaded: 0,
             detail: Some(
-                "hay algo escuchando en esa dirección, pero no responde como LM Studio"
-                    .into(),
+                "hay algo escuchando en esa dirección, pero no responde como LM Studio".into(),
             ),
         },
         Some(items) => LmStudioStatus {
@@ -306,7 +304,11 @@ fn parse_native_models(body: &Value) -> Vec<ModelDescriptor> {
                 api_id: id.to_string(),
                 public_name: format!("{PROVIDER}/{id}"),
                 caps,
-                limits: Limits { context_max: context, input_max: context, output_max: None },
+                limits: Limits {
+                    context_max: context,
+                    input_max: context,
+                    output_max: None,
+                },
                 accounting: Accounting::Local,
                 // Sin precio: ejecutar en la propia máquina no cuesta por token.
                 pricing: None,
@@ -383,9 +385,7 @@ pub fn parse_details(body: &Value) -> Vec<LocalModelDetail> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{
-        check_capabilities, ContentPart, Message, Role, ToolChoice, ToolDef,
-    };
+    use crate::provider::{check_capabilities, ContentPart, Message, Role, ToolChoice, ToolDef};
 
     /// Respuesta real de LM Studio 0.4.20, capturada el 2026-07-31.
     fn real_native_sample() -> Value {
@@ -470,9 +470,14 @@ mod tests {
             assert_eq!(m.accounting, Accounting::Local);
             assert!(m.pricing.is_none(), "lo local no cuesta por token");
         }
-        assert_eq!(model("qwen/qwen3.6-35b-a3b").limits.context_max, Some(262_144));
         assert_eq!(
-            model("text-embedding-nomic-embed-text-v1.5").limits.context_max,
+            model("qwen/qwen3.6-35b-a3b").limits.context_max,
+            Some(262_144)
+        );
+        assert_eq!(
+            model("text-embedding-nomic-embed-text-v1.5")
+                .limits
+                .context_max,
             Some(2048)
         );
     }
@@ -503,10 +508,16 @@ mod tests {
     fn asking_chat_of_an_embeddings_model_is_refused_with_422() {
         let embeddings = model("text-embedding-nomic-embed-text-v1.5");
         assert!(embeddings.caps.embeddings);
-        assert!(!embeddings.caps.text, "un modelo de embeddings no hace texto");
+        assert!(
+            !embeddings.caps.text,
+            "un modelo de embeddings no hace texto"
+        );
 
-        let err = check_capabilities(&chat_request("text-embedding-nomic-embed-text-v1.5"), &embeddings)
-            .unwrap_err();
+        let err = check_capabilities(
+            &chat_request("text-embedding-nomic-embed-text-v1.5"),
+            &embeddings,
+        )
+        .unwrap_err();
         assert_eq!(err.http_status(), 422);
         assert_eq!(err.kind_str(), "unsupported");
         assert!(
@@ -563,13 +574,19 @@ mod tests {
     #[test]
     fn details_expose_quantization_and_load_state() {
         let details = parse_details(&real_native_sample());
-        let gemma = details.iter().find(|d| d.api_id == "gemma-4-12b-it-mlx").unwrap();
+        let gemma = details
+            .iter()
+            .find(|d| d.api_id == "gemma-4-12b-it-mlx")
+            .unwrap();
         assert!(gemma.loaded);
         assert_eq!(gemma.quantization.as_deref(), Some("8bit"));
         assert_eq!(gemma.runtime.as_deref(), Some("mlx"));
         assert_eq!(gemma.arch.as_deref(), Some("gemma4_unified"));
 
-        let qwen = details.iter().find(|d| d.api_id == "qwen/qwen3.6-35b-a3b").unwrap();
+        let qwen = details
+            .iter()
+            .find(|d| d.api_id == "qwen/qwen3.6-35b-a3b")
+            .unwrap();
         assert!(!qwen.loaded, "estaba not-loaded en la muestra");
     }
 
@@ -608,7 +625,10 @@ mod tests {
         let err = LmStudioAdapter::unreachable_at("http://127.0.0.1:1234", "connection refused");
         assert_eq!(err.kind_str(), "transport");
         let text = err.to_string();
-        assert!(text.contains("127.0.0.1:1234"), "debe nombrar la dirección: {text}");
+        assert!(
+            text.contains("127.0.0.1:1234"),
+            "debe nombrar la dirección: {text}"
+        );
         assert!(text.contains("abierto"), "debe decir qué hacer: {text}");
     }
 
@@ -622,6 +642,7 @@ mod tests {
             kind: CredentialKind::Local,
             secret: String::new(),
             external_id: url.map(str::to_string),
+            provider_metadata: None,
         };
         assert_eq!(
             a.base_for(&cred(Some("http://localhost:4321/v1"))),

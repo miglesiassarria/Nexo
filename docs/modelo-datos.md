@@ -20,7 +20,7 @@ CREATE TABLE accounts (
   label           TEXT NOT NULL,           -- lo que ve el usuario: "ChatGPT Plus (personal)"
   keychain_ref    TEXT,                    -- clave lógica en el almacén seguro. NUNCA el secreto
   external_id     TEXT,                    -- p.ej. identificador de cuenta del proveedor
-  project_id      TEXT,                    -- proyecto de Google Cloud cuando aplique
+  provider_metadata TEXT,                  -- JSON no secreto específico de la vía
   scopes          TEXT,                    -- concedidos, separados por espacio
   expires_at      INTEGER,                 -- caducidad del access token, epoch ms
   status          TEXT NOT NULL,           -- 'active' | 'expired' | 'revoked' | 'broken'
@@ -293,6 +293,10 @@ CREATE TABLE encrypted_secrets (
 La clave maestra necesaria para descifrar esta tabla reside exclusivamente en el
 Llavero del sistema operativo (`com.nexo.gateway / master_key`). Un volcado de
 `nexo.sqlite` no contiene texto plano ni permite recuperar credenciales.
+
+Migración v5 (spec 0018). Añade `accounts.provider_metadata` para datos no
+secretos específicos de un proveedor, como el proyecto y el tier de Code Assist.
+Los tokens de Google continúan en `encrypted_secrets`, nunca en esta columna.
 
 ## Migraciones
 

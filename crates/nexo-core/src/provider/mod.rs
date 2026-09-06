@@ -5,11 +5,12 @@
 //! capacidades, límites y contabilidad distintos según cómo se autenticó.
 
 pub mod chatgpt_subscription;
+pub mod gemini_subscription;
 pub mod lmstudio;
-pub mod ollama;
-pub mod openai_compat;
 pub mod mock;
+pub mod ollama;
 pub mod openai_apikey;
+pub mod openai_compat;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -66,7 +67,10 @@ pub struct AdapterId {
 
 impl AdapterId {
     pub fn new(provider: impl Into<String>, kind: CredentialKind) -> Self {
-        Self { provider: provider.into(), kind }
+        Self {
+            provider: provider.into(),
+            kind,
+        }
     }
 
     pub fn slug(&self) -> String {
@@ -92,6 +96,8 @@ pub struct ResolvedCredential {
     pub secret: String,
     /// Identificador de cuenta del proveedor, cuando lo haya.
     pub external_id: Option<String>,
+    /// JSON no secreto específico del proveedor, resuelto desde la cuenta.
+    pub provider_metadata: Option<String>,
 }
 
 impl std::fmt::Debug for ResolvedCredential {
@@ -101,6 +107,7 @@ impl std::fmt::Debug for ResolvedCredential {
             .field("kind", &self.kind)
             .field("secret", &"<oculto>")
             .field("external_id", &self.external_id)
+            .field("provider_metadata", &self.provider_metadata)
             .finish()
     }
 }
@@ -148,8 +155,15 @@ pub enum ContentPart {
     Text(String),
     /// URL o data URI de una imagen.
     ImageUrl(String),
-    Audio { mime: String, base64: String },
-    File { name: String, mime: String, base64: String },
+    Audio {
+        mime: String,
+        base64: String,
+    },
+    File {
+        name: String,
+        mime: String,
+        base64: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -313,18 +327,37 @@ impl Message {
 #[derive(Debug, Clone)]
 pub enum ChatEvent {
     /// Marca el punto de medición del tiempo hasta el primer token.
-    Started { provider_request_id: Option<String> },
-    TextDelta { text: String },
-    ReasoningDelta { text: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, args_json: String },
+    Started {
+        provider_request_id: Option<String>,
+    },
+    TextDelta {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        args_json: String,
+    },
     /// Argumentos completos comunicados al cerrar el item. Sustituyen los
     /// deltas acumulados y cubren proveedores que no emiten deltas.
-    ToolCallArgumentsDone { id: String, args_json: String },
-    ToolCallEnd { id: String },
+    ToolCallArgumentsDone {
+        id: String,
+        args_json: String,
+    },
+    ToolCallEnd {
+        id: String,
+    },
     /// Puede no llegar nunca: en las rutas de suscripción no llega.
     Usage(UsageReport),
-    Finished { reason: FinishReason },
+    Finished {
+        reason: FinishReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -372,7 +405,10 @@ impl UsageReport {
     }
 
     pub fn unavailable() -> Self {
-        Self { source: UsageSource::Unavailable, ..Default::default() }
+        Self {
+            source: UsageSource::Unavailable,
+            ..Default::default()
+        }
     }
 }
 
@@ -562,20 +598,34 @@ pub enum Health {
 pub enum AdapterError {
     /// Capacidad solicitada no soportada por esta pareja proveedor+credencial.
     #[error("capacidad no soportada: {capability}")]
-    Unsupported { capability: String, hint: Option<String> },
+    Unsupported {
+        capability: String,
+        hint: Option<String>,
+    },
 
     #[error("autenticación: {reason}")]
-    Auth { reason: String, reauth_required: bool },
+    Auth {
+        reason: String,
+        reauth_required: bool,
+    },
 
     #[error("el proveedor limitó la tasa")]
     RateLimited { retry_after: Option<Duration> },
 
     /// Límite de Nexo, no del proveedor. Se distingue en las estadísticas.
     #[error("límite local de la aplicación {app_id}")]
-    LocalLimit { app_id: String, window_secs: u64, detail: String },
+    LocalLimit {
+        app_id: String,
+        window_secs: u64,
+        detail: String,
+    },
 
     #[error("el proveedor falló ({status}): {message}")]
-    Upstream { status: u16, provider_code: Option<String>, message: String },
+    Upstream {
+        status: u16,
+        provider_code: Option<String>,
+        message: String,
+    },
 
     #[error("transporte: {detail}")]
     Transport { detail: String },
@@ -600,7 +650,9 @@ impl AdapterError {
             Self::Unsupported { .. } => 422,
             Self::Auth { .. } => 401,
             Self::RateLimited { .. } | Self::LocalLimit { .. } => 429,
-            Self::Upstream { .. } | Self::Malformed { .. } | Self::SubscriptionPathBroken { .. } => 502,
+            Self::Upstream { .. }
+            | Self::Malformed { .. }
+            | Self::SubscriptionPathBroken { .. } => 502,
             Self::Transport { .. } => 503,
             Self::Cancelled => 499,
         }
@@ -639,11 +691,17 @@ impl AdapterError {
 
     pub fn from_reqwest(e: reqwest::Error) -> Self {
         if e.is_timeout() {
-            Self::Transport { detail: format!("timeout: {e}") }
+            Self::Transport {
+                detail: format!("timeout: {e}"),
+            }
         } else if e.is_decode() {
-            Self::Malformed { detail: e.to_string() }
+            Self::Malformed {
+                detail: e.to_string(),
+            }
         } else {
-            Self::Transport { detail: e.to_string() }
+            Self::Transport {
+                detail: e.to_string(),
+            }
         }
     }
 }
@@ -728,7 +786,11 @@ mod tests {
         ModelDescriptor {
             api_id: "m".into(),
             public_name: "p/m".into(),
-            caps: Capabilities { text: true, streaming: true, ..Default::default() },
+            caps: Capabilities {
+                text: true,
+                streaming: true,
+                ..Default::default()
+            },
             limits: Limits::default(),
             accounting: Accounting::Subscription,
             pricing: None,
@@ -738,7 +800,9 @@ mod tests {
     #[test]
     fn vision_request_against_text_model_is_rejected_not_degraded() {
         let mut r = req();
-        r.messages[0].parts.push(ContentPart::ImageUrl("data:image/png;base64,AA".into()));
+        r.messages[0]
+            .parts
+            .push(ContentPart::ImageUrl("data:image/png;base64,AA".into()));
         let err = check_capabilities(&r, &text_only_model()).unwrap_err();
         assert_eq!(err.http_status(), 422);
         assert_eq!(err.kind_str(), "unsupported");
@@ -791,7 +855,10 @@ mod tests {
                          "embeddings":false}"#;
         let caps: Capabilities =
             serde_json::from_str(stored).expect("una fila vieja debe seguir deserializando");
-        assert!(caps.text, "no se puede perder una capacidad al añadir un campo");
+        assert!(
+            caps.text,
+            "no se puede perder una capacidad al añadir un campo"
+        );
         assert!(caps.tools);
         assert!(caps.streaming);
         assert!(caps.reasoning);

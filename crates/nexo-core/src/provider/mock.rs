@@ -41,7 +41,9 @@ pub struct MockAdapter {
 
 impl Default for MockAdapter {
     fn default() -> Self {
-        Self { delay: Duration::from_millis(15) }
+        Self {
+            delay: Duration::from_millis(15),
+        }
     }
 }
 
@@ -138,10 +140,7 @@ impl ProviderAdapter for MockAdapter {
         } else {
             format!("eco: {prompt}")
         };
-        let words: Vec<String> = reply
-            .split_inclusive(' ')
-            .map(|s| s.to_string())
-            .collect();
+        let words: Vec<String> = reply.split_inclusive(' ').map(|s| s.to_string()).collect();
 
         let input_tokens = prompt.split_whitespace().count() as u32;
         let output_tokens = words.len() as u32;
@@ -157,7 +156,9 @@ impl ProviderAdapter for MockAdapter {
                         tokio::time::sleep(SLOW_START_DELAY).await;
                     }
                     return Some((
-                        Ok(ChatEvent::Started { provider_request_id: None }),
+                        Ok(ChatEvent::Started {
+                            provider_request_id: None,
+                        }),
                         (1, words, usage_sent),
                     ));
                 }
@@ -195,7 +196,9 @@ impl ProviderAdapter for MockAdapter {
         let stream = futures::StreamExt::chain(
             stream,
             futures::stream::once(async {
-                Ok(ChatEvent::Finished { reason: crate::provider::FinishReason::Stop })
+                Ok(ChatEvent::Finished {
+                    reason: crate::provider::FinishReason::Stop,
+                })
             }),
         );
 
@@ -240,6 +243,7 @@ mod tests {
             kind: CredentialKind::Mock,
             secret: String::new(),
             external_id: None,
+            provider_metadata: None,
         }
     }
 
@@ -287,7 +291,9 @@ mod tests {
         assert_eq!(finished, 1);
         assert!(matches!(
             events.last(),
-            Some(ChatEvent::Finished { reason: FinishReason::Stop })
+            Some(ChatEvent::Finished {
+                reason: FinishReason::Stop
+            })
         ));
     }
 

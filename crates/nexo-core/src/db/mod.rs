@@ -28,13 +28,17 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         migrations::apply(&conn)?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         migrations::apply(&conn)?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -47,9 +51,7 @@ impl Db {
         let conn = self.lock();
         let mut settings = Settings::default();
         let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (key, value) = row?;
             match key.as_str() {
@@ -95,7 +97,10 @@ impl Db {
             ("port", s.port.to_string()),
             ("allow_lan", s.allow_lan.to_string()),
             ("retention_days", s.retention_days.to_string()),
-            ("content_retention_days", s.content_retention_days.to_string()),
+            (
+                "content_retention_days",
+                s.content_retention_days.to_string(),
+            ),
             ("log_level", s.log_level.clone()),
             ("manifest_version", s.manifest_version.clone()),
             ("codex_client_version", s.codex_client_version.clone()),
@@ -132,11 +137,13 @@ impl Db {
         conn.execute(
             "INSERT INTO accounts
                (id, provider_id, credential_kind, label, keychain_ref, external_id,
-                scopes, expires_at, status, risk_ack_at, created_at, last_used_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                scopes, expires_at, status, risk_ack_at, created_at, last_used_at,
+                provider_metadata)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
              ON CONFLICT(provider_id, credential_kind, external_id) DO UPDATE SET
                label = ?4, keychain_ref = ?5, scopes = ?7, expires_at = ?8,
-               status = ?9, risk_ack_at = COALESCE(accounts.risk_ack_at, ?10)",
+               status = ?9, risk_ack_at = COALESCE(accounts.risk_ack_at, ?10),
+               provider_metadata = ?13",
             params![
                 account.id,
                 account.provider_id,
@@ -150,6 +157,7 @@ impl Db {
                 account.risk_ack_at,
                 account.created_at,
                 account.last_used_at,
+                account.provider_metadata,
             ],
         )?;
         Ok(())
@@ -159,22 +167,20 @@ impl Db {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, provider_id, credential_kind, label, keychain_ref, external_id,
-                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at
+                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at,
+                    provider_metadata
              FROM accounts ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], Account::from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn account_for(
-        &self,
-        provider_id: &str,
-        kind: CredentialKind,
-    ) -> Result<Option<Account>> {
+    pub fn account_for(&self, provider_id: &str, kind: CredentialKind) -> Result<Option<Account>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, provider_id, credential_kind, label, keychain_ref, external_id,
-                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at
+                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at,
+                    provider_metadata
              FROM accounts
              WHERE provider_id = ?1 AND credential_kind = ?2 AND status != 'revoked'
              ORDER BY created_at DESC LIMIT 1",
@@ -188,7 +194,8 @@ impl Db {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, provider_id, credential_kind, label, keychain_ref, external_id,
-                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at
+                    scopes, expires_at, status, risk_ack_at, created_at, last_used_at,
+                    provider_metadata
              FROM accounts WHERE id = ?1",
         )?;
         Ok(stmt.query_row(params![id], Account::from_row).optional()?)
@@ -218,6 +225,19 @@ impl Db {
         conn.execute(
             "UPDATE accounts SET status = ?2 WHERE id = ?1",
             params![account_id, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_account_provider_metadata(
+        &self,
+        account_id: &str,
+        metadata: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE accounts SET provider_metadata = ?2 WHERE id = ?1",
+            params![account_id, metadata],
         )?;
         Ok(())
     }
@@ -371,6 +391,9 @@ pub struct Account {
     pub risk_ack_at: Option<i64>,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
+    /// JSON no secreto específico de la vía (p. ej. project_id de Code Assist).
+    #[serde(default)]
+    pub provider_metadata: Option<String>,
 }
 
 impl Account {
@@ -389,6 +412,7 @@ impl Account {
             risk_ack_at: r.get(9)?,
             created_at: r.get(10)?,
             last_used_at: r.get(11)?,
+            provider_metadata: r.get(12)?,
         })
     }
 
@@ -577,7 +601,12 @@ impl Db {
 
     // -- Secretos cifrados (ADR 0006, spec 0015) ----------------------------
 
-    pub fn upsert_encrypted_secret(&self, key: &str, nonce: &[u8], ciphertext: &[u8]) -> Result<()> {
+    pub fn upsert_encrypted_secret(
+        &self,
+        key: &str,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<()> {
         let conn = self.lock();
         let now = util::now_ms();
         conn.execute(
@@ -591,9 +620,8 @@ impl Db {
 
     pub fn get_encrypted_secret(&self, key: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT nonce, ciphertext FROM encrypted_secrets WHERE key = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT nonce, ciphertext FROM encrypted_secrets WHERE key = ?1")?;
         Ok(stmt
             .query_row(params![key], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?)
@@ -644,7 +672,10 @@ impl Db {
         match res {
             Ok(v) => {
                 let trimmed = v.trim();
-                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") || trimmed.eq_ignore_ascii_case("none") {
+                if trimmed.is_empty()
+                    || trimmed.eq_ignore_ascii_case("null")
+                    || trimmed.eq_ignore_ascii_case("none")
+                {
                     Ok(None)
                 } else {
                     match trimmed.parse::<u64>() {
@@ -653,9 +684,7 @@ impl Db {
                     }
                 }
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Ok(Some(DEFAULT_MAX_REQUEST_BODY_BYTES))
-            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Some(DEFAULT_MAX_REQUEST_BODY_BYTES)),
             Err(e) => Err(CoreError::Db(e)),
         }
     }
@@ -697,7 +726,9 @@ mod custom_provider_tests {
     #[test]
     fn creates_and_lists_a_provider() {
         let db = db();
-        let p = db.create_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1").unwrap();
+        let p = db
+            .create_custom_provider("OpenCode Zen", "https://opencode.ai/zen/v1")
+            .unwrap();
         assert_eq!(p.id, "opencode-zen");
         assert_eq!(p.base_url, "https://opencode.ai/zen/v1");
         assert_eq!(p.compat, "openai_compat");
@@ -707,7 +738,9 @@ mod custom_provider_tests {
     #[test]
     fn trailing_slash_in_url_is_stripped() {
         let db = db();
-        let p = db.create_custom_provider("Runpod", "https://runpod.io/v1/").unwrap();
+        let p = db
+            .create_custom_provider("Runpod", "https://runpod.io/v1/")
+            .unwrap();
         assert_eq!(p.base_url, "https://runpod.io/v1");
     }
 
@@ -715,7 +748,8 @@ mod custom_provider_tests {
     fn duplicate_name_is_rejected_not_overwritten() {
         // Criterio 3 de la especificación 0002.
         let db = db();
-        db.create_custom_provider("Runpod", "https://a.example/v1").unwrap();
+        db.create_custom_provider("Runpod", "https://a.example/v1")
+            .unwrap();
         let err = db
             .create_custom_provider("Runpod", "https://b.example/v1")
             .unwrap_err();
@@ -733,7 +767,8 @@ mod custom_provider_tests {
         // «Mi Proveedor» y «mi   proveedor!!» producen el mismo id: es la
         // colisión que la clave primaria debe atrapar, no solo el nombre exacto.
         let db = db();
-        db.create_custom_provider("Mi Proveedor", "https://a.example/v1").unwrap();
+        db.create_custom_provider("Mi Proveedor", "https://a.example/v1")
+            .unwrap();
         assert!(db
             .create_custom_provider("mi   proveedor!!", "https://b.example/v1")
             .is_err());
@@ -742,14 +777,18 @@ mod custom_provider_tests {
     #[test]
     fn blank_name_or_url_is_rejected() {
         let db = db();
-        assert!(db.create_custom_provider("   ", "https://a.example").is_err());
+        assert!(db
+            .create_custom_provider("   ", "https://a.example")
+            .is_err());
         assert!(db.create_custom_provider("Runpod", "  ").is_err());
     }
 
     #[test]
     fn only_punctuation_name_is_rejected_with_a_clear_reason() {
         let db = db();
-        let err = db.create_custom_provider("···", "https://a.example").unwrap_err();
+        let err = db
+            .create_custom_provider("···", "https://a.example")
+            .unwrap_err();
         assert!(matches!(err, CoreError::Config(_)));
     }
 
@@ -769,8 +808,10 @@ mod custom_provider_tests {
     #[test]
     fn update_url_strips_trailing_slash_too() {
         let db = db();
-        db.create_custom_provider("Runpod", "https://a.example/v1").unwrap();
-        db.update_custom_provider_url("runpod", "https://b.example/v1/").unwrap();
+        db.create_custom_provider("Runpod", "https://a.example/v1")
+            .unwrap();
+        db.update_custom_provider_url("runpod", "https://b.example/v1/")
+            .unwrap();
         assert_eq!(
             db.custom_provider("runpod").unwrap().unwrap().base_url,
             "https://b.example/v1"
@@ -806,6 +847,7 @@ mod tests {
             risk_ack_at: risk_ack,
             created_at: util::now_ms(),
             last_used_at: None,
+            provider_metadata: None,
         }
     }
 
@@ -875,7 +917,10 @@ mod tests {
             .find(|r| r.credential_kind == "subscription_oauth")
             .unwrap();
         assert_eq!(sub.accounting, "subscription");
-        assert!(sub.price_input.is_none(), "la vía de suscripción no tiene precio");
+        assert!(
+            sub.price_input.is_none(),
+            "la vía de suscripción no tiene precio"
+        );
 
         let key = gpt55
             .iter()
@@ -923,7 +968,10 @@ mod tests {
         let mut a = account(CredentialKind::ApiKey, None);
         a.expires_at = Some(util::now_ms() + 10_000);
         assert!(!a.is_expired(0));
-        assert!(a.is_expired(30_000), "con margen de 30s ya debe considerarse caducado");
+        assert!(
+            a.is_expired(30_000),
+            "con margen de 30s ya debe considerarse caducado"
+        );
         a.expires_at = None;
         assert!(!a.is_expired(999_999));
     }
@@ -944,12 +992,16 @@ mod tests {
         assert_eq!(read.0, nonce.to_vec());
         assert_eq!(read.1, ciphertext.to_vec());
 
-        assert_eq!(db.list_encrypted_secret_keys().unwrap(), vec![key.to_string()]);
+        assert_eq!(
+            db.list_encrypted_secret_keys().unwrap(),
+            vec![key.to_string()]
+        );
 
         // Actualización
         let nonce2 = b"abcdefghijkl";
         let ciphertext2 = b"new-ciphertext";
-        db.upsert_encrypted_secret(key, nonce2, ciphertext2).unwrap();
+        db.upsert_encrypted_secret(key, nonce2, ciphertext2)
+            .unwrap();
         let read2 = db.get_encrypted_secret(key).unwrap().unwrap();
         assert_eq!(read2.0, nonce2.to_vec());
         assert_eq!(read2.1, ciphertext2.to_vec());
