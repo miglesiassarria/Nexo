@@ -420,6 +420,7 @@ mod tests {
         ChatRequest {
             api_model: "gpt-5.5".into(),
             public_model: "openai/gpt-5.5".into(),
+            opencode_session: None,
             messages: vec![],
             tools: vec![],
             tool_choice: ToolChoice::Auto,

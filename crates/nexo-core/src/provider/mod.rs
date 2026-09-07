@@ -120,6 +120,10 @@ impl std::fmt::Debug for ResolvedCredential {
 pub struct ChatRequest {
     pub api_model: String,
     pub public_model: String,
+    /// Identificador estable de la conversación para proveedores que lo exigen.
+    /// No contiene el texto de la conversación: la puerta de entrada puede
+    /// recibirlo del cliente y, si falta, Nexo genera un identificador derivado.
+    pub opencode_session: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDef>,
     pub tool_choice: ToolChoice,
@@ -764,6 +768,7 @@ mod tests {
         ChatRequest {
             api_model: "m".into(),
             public_model: "p/m".into(),
+            opencode_session: None,
             messages: vec![Message {
                 role: Role::User,
                 parts: vec![ContentPart::Text("hola".into())],

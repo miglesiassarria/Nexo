@@ -36,6 +36,9 @@ pub struct WireChatRequest {
     pub response_format: Option<Value>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Cabecera recibida por el gateway, no parte del JSON público.
+    #[serde(skip)]
+    pub opencode_session: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +68,35 @@ pub struct WireFunction {
 }
 
 impl WireChatRequest {
+    /// Genera un identificador estable sin enviar el contenido de la
+    /// conversación a ningún sitio. Se usa cuando el cliente no manda la
+    /// cabecera y conserva el mismo valor mientras reenvíe el historial.
+    pub fn derived_opencode_session(&self, app_id: &str) -> String {
+        let first_user = self
+            .messages
+            .iter()
+            .find(|message| message.role == "user")
+            .or_else(|| self.messages.first());
+
+        let mut seed = Vec::new();
+        seed.extend_from_slice(b"nexo-opencode-session-v1\0");
+        seed.extend_from_slice(app_id.as_bytes());
+        seed.push(0);
+        if let Some(message) = first_user {
+            seed.extend_from_slice(message.role.as_bytes());
+            seed.push(0);
+            seed.extend_from_slice(
+                message
+                    .content
+                    .as_ref()
+                    .map(Value::to_string)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
+        }
+        format!("nexo-{}", util::sha256_hex(&seed))
+    }
+
     pub fn into_internal(self, api_model: String, public_model: String) -> Result<ChatRequest, String> {
         if self.messages.is_empty() {
             return Err("`messages` no puede estar vacío".into());
@@ -134,6 +166,7 @@ impl WireChatRequest {
         Ok(ChatRequest {
             api_model,
             public_model,
+            opencode_session: self.opencode_session,
             messages,
             tools,
             tool_choice,
@@ -540,6 +573,39 @@ mod tests {
         }));
         let r = w.into_internal("m".into(), "p/m".into()).unwrap();
         assert_eq!(r.max_output_tokens, Some(100));
+    }
+
+    #[test]
+    fn derived_opencode_session_is_stable_for_the_same_conversation_start() {
+        let first = parse(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hola"}]
+        }));
+        let second = parse(json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hola"},
+                {"role": "assistant", "content": "respuesta"},
+                {"role": "user", "content": "segunda pregunta"}
+            ]
+        }));
+        let other = parse(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "otra conversación"}]
+        }));
+
+        assert_eq!(
+            first.derived_opencode_session("app-1"),
+            second.derived_opencode_session("app-1")
+        );
+        assert_ne!(
+            first.derived_opencode_session("app-1"),
+            other.derived_opencode_session("app-1")
+        );
+        assert_ne!(
+            first.derived_opencode_session("app-1"),
+            first.derived_opencode_session("app-2")
+        );
     }
 
     #[test]

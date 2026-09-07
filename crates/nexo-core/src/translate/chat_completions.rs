@@ -398,6 +398,7 @@ mod tests {
         ChatRequest {
             api_model: "gpt-5.5".into(),
             public_model: "openai/gpt-5.5".into(),
+            opencode_session: None,
             messages: vec![Message {
                 role: Role::User,
                 parts: vec![ContentPart::Text("hola".into())],
