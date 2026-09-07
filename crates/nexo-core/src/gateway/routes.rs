@@ -175,6 +175,14 @@ async fn chat_completions(
     };
 
     let streaming = wire.stream;
+    let incoming_session = headers
+        .get("x-opencode-session")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut wire = wire;
+    wire.opencode_session = incoming_session;
 
     let prepared = match nexo.prepare(&app.id, wire).await {
         Ok(p) => p,

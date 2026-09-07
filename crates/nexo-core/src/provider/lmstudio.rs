@@ -441,6 +441,7 @@ mod tests {
         ChatRequest {
             api_model: api_model.into(),
             public_model: format!("{PROVIDER}/{api_model}"),
+            opencode_session: None,
             messages: vec![Message {
                 role: Role::User,
                 parts: vec![ContentPart::Text("hola".into())],

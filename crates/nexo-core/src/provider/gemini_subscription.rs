@@ -653,6 +653,7 @@ mod tests {
         ChatRequest {
             api_model: "gemini-2.5-flash".into(),
             public_model: "gemini_subscription/gemini-2.5-flash".into(),
+            opencode_session: None,
             messages: vec![Message {
                 role: Role::User,
                 parts: vec![ContentPart::Text("hola".into())],

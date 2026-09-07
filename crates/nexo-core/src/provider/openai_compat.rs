@@ -14,11 +14,14 @@ use crate::provider::{
     Health, Limits, ModelDescriptor, ProviderAdapter, ResolvedCredential,
 };
 use crate::translate::chat_completions;
+use crate::util;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 
 pub const CREDENTIAL_KIND: CredentialKind = CredentialKind::ApiKey;
+const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+const NEXO_USER_AGENT: &str = concat!("Nexo/", env!("CARGO_PKG_VERSION"));
 
 /// Atajo que la interfaz ofrece como opción propia, con la URL ya rellena: el
 /// usuario solo pega su clave. Solo son datos — el proveedor que se crea es un
@@ -97,6 +100,30 @@ impl OpenAiCompatAdapter {
                  activo, o cambia la dirección en Nexo. ({detail})"
             ),
         }
+    }
+
+    fn is_opencode_go(cred: &ResolvedCredential, base: &str) -> bool {
+        cred.provider_id == "opencode-go" || base == OPENCODE_GO_BASE_URL
+    }
+
+    fn opencode_go_session(req: &crate::provider::ChatRequest, cred: &ResolvedCredential) -> String {
+        if let Some(session) = req.opencode_session.as_deref().filter(|s| !s.is_empty()) {
+            return session.to_string();
+        }
+
+        let first_user = req
+            .messages
+            .iter()
+            .find(|message| message.role == crate::provider::Role::User)
+            .or_else(|| req.messages.first());
+        let mut seed = Vec::new();
+        seed.extend_from_slice(b"nexo-opencode-session-v1\0");
+        seed.extend_from_slice(cred.account_id.as_bytes());
+        seed.push(0);
+        if let Some(message) = first_user {
+            seed.extend_from_slice(message.text().as_bytes());
+        }
+        format!("nexo-{}", util::sha256_hex(&seed))
     }
 }
 
@@ -185,11 +212,17 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         // Las capacidades ya las comprobó el servicio contra el catálogo real.
         let body = chat_completions::build_request(req);
 
-        let resp = self
+        let mut request = self
             .http
             .post(format!("{base}/chat/completions"))
             .header("authorization", format!("Bearer {}", cred.secret))
-            .header("accept", "text/event-stream")
+            .header("accept", "text/event-stream");
+        if Self::is_opencode_go(cred, &base) {
+            request = request
+                .header("user-agent", NEXO_USER_AGENT)
+                .header("x-opencode-session", Self::opencode_go_session(req, cred));
+        }
+        let resp = request
             .json(&body)
             .send()
             .await
@@ -252,15 +285,19 @@ fn parse_model_ids(body: &Value) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn cred(external_id: Option<&str>) -> ResolvedCredential {
+    fn cred_for(provider_id: &str, external_id: Option<&str>) -> ResolvedCredential {
         ResolvedCredential {
             account_id: "acc-1".into(),
-            provider_id: "opencode-zen".into(),
+            provider_id: provider_id.into(),
             kind: CREDENTIAL_KIND,
             secret: "sk-test".into(),
             external_id: external_id.map(str::to_string),
             provider_metadata: None,
         }
+    }
+
+    fn cred(external_id: Option<&str>) -> ResolvedCredential {
+        cred_for("opencode-zen", external_id)
     }
 
     fn adapter() -> OpenAiCompatAdapter {
@@ -324,6 +361,7 @@ mod tests {
         let req = crate::provider::ChatRequest {
             api_model: "x".into(),
             public_model: "p/x".into(),
+            opencode_session: None,
             messages: vec![],
             tools: vec![],
             tool_choice: crate::provider::ToolChoice::Auto,
@@ -407,6 +445,7 @@ mod tests {
         let req = crate::provider::ChatRequest {
             api_model: "x".into(),
             public_model: "p/x".into(),
+            opencode_session: None,
             messages: vec![],
             tools: vec![],
             tool_choice: crate::provider::ToolChoice::Auto,
@@ -428,5 +467,63 @@ mod tests {
             Err(other) => panic!("esperaba RateLimited con retry_after, llegó {other:?}"),
             Ok(_) => panic!("un 429 debe rechazar la petición"),
         }
+    }
+
+    #[tokio::test]
+    async fn opencode_go_accepts_a_request_with_the_required_session_header() {
+        use axum::http::HeaderMap;
+        use axum::response::IntoResponse;
+        use axum::routing::post;
+
+        async fn require_session(headers: HeaderMap) -> impl IntoResponse {
+            if headers.contains_key("x-opencode-session")
+                && headers.get("user-agent").and_then(|value| value.to_str().ok())
+                    == Some(NEXO_USER_AGENT)
+            {
+                (axum::http::StatusCode::OK, "data: [DONE]\n\n")
+            } else {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "missing x-opencode-session",
+                )
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route("/chat/completions", post(require_session));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let req = crate::provider::ChatRequest {
+            api_model: "deepseek-v4-flash".into(),
+            public_model: "opencode-go/deepseek-v4-flash".into(),
+            opencode_session: None,
+            messages: vec![crate::provider::Message {
+                role: crate::provider::Role::User,
+                parts: vec![crate::provider::ContentPart::Text("hola".into())],
+                tool_call_id: None,
+                tool_calls: vec![],
+            }],
+            tools: vec![],
+            tool_choice: crate::provider::ToolChoice::Auto,
+            reasoning: None,
+            max_output_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: vec![],
+            json_mode: false,
+            stream: true,
+        };
+
+        let result = adapter()
+            .stream(
+                &req,
+                &cred_for("opencode-go", Some(&format!("http://{addr}"))),
+            )
+            .await;
+
+        assert!(result.is_ok(), "OpenCode Go rechazó la petición");
     }
 }

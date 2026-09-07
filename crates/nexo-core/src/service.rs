@@ -1827,12 +1827,18 @@ impl Nexo {
                 )),
             })?;
 
+        let opencode_session = wire
+            .opencode_session
+            .clone()
+            .or_else(|| Some(wire.derived_opencode_session(app_id)));
+
         let mut req = wire
             .into_internal(resolved.api_id.clone(), resolved.public_name.clone())
             .map_err(|e| AdapterError::Unsupported {
                 capability: "request".into(),
                 hint: Some(e),
             })?;
+        req.opencode_session = opencode_session;
 
         // Rechazo explícito antes de gastar nada. Se hace aquí y no en el
         // adaptador porque el catálogo real vive en la base de datos: los
