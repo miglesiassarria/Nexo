@@ -389,12 +389,20 @@ impl Nexo {
     /// genérico enriquezca sus catálogos. Pensado para llamarse en segundo plano
     /// al arrancar, sin bloquear: si falla, el catálogo sigue siendo solo texto.
     pub async fn refresh_models_dev(&self) -> usize {
+        self.load_models_dev(false).await
+    }
+
+    async fn load_models_dev(&self, force_refresh: bool) -> usize {
         let cache_path = models_dev::default_cache_path(
             default_db_path()
                 .parent()
                 .unwrap_or(std::path::Path::new(".")),
         );
-        let catalog = models_dev::load(&self.http, &cache_path).await;
+        let catalog = if force_refresh {
+            models_dev::refresh(&self.http, &cache_path).await
+        } else {
+            models_dev::load(&self.http, &cache_path).await
+        };
         let count = catalog.provider_count();
         *self.models_dev.write().await = catalog;
         count
@@ -414,6 +422,13 @@ impl Nexo {
     /// arrancar; separarla otra vez en dos tareas sin orden reintroduce el fallo.
     pub async fn refresh_models_dev_then_catalogs(&self) -> Vec<CatalogRefresh> {
         self.refresh_models_dev().await;
+        self.refresh_catalog_from_providers().await
+    }
+
+    /// Refresco manual: consulta capacidades actuales antes de descubrir modelos.
+    /// Una caché aún reciente puede ser anterior al lanzamiento de un modelo.
+    pub async fn force_refresh_models_dev_then_catalogs(&self) -> Vec<CatalogRefresh> {
+        self.load_models_dev(true).await;
         self.refresh_catalog_from_providers().await
     }
 

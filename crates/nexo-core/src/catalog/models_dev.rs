@@ -180,12 +180,28 @@ fn parse_model(m: &Value) -> ModelsDevEntry {
 /// catálogo vacío y el que enriquece el descriptor simplemente no encuentra nada,
 /// que es la degradación aceptada (solo texto) frente a quedarse sin catálogo.
 pub async fn load(http: &reqwest::Client, cache_path: &Path) -> ModelsDevCatalog {
-    if let Some(json) = read_cache_if_fresh(cache_path) {
-        tracing::debug!("models.dev servido desde caché");
-        return ModelsDevCatalog::parse(&json);
+    load_from(http, cache_path, SOURCE_URL, false).await
+}
+
+/// Descarga las capacidades aunque la caché aún sea reciente.
+pub async fn refresh(http: &reqwest::Client, cache_path: &Path) -> ModelsDevCatalog {
+    load_from(http, cache_path, SOURCE_URL, true).await
+}
+
+async fn load_from(
+    http: &reqwest::Client,
+    cache_path: &Path,
+    source_url: &str,
+    force_refresh: bool,
+) -> ModelsDevCatalog {
+    if !force_refresh {
+        if let Some(json) = read_cache_if_fresh(cache_path) {
+            tracing::debug!("models.dev servido desde caché");
+            return ModelsDevCatalog::parse(&json);
+        }
     }
 
-    match fetch(http).await {
+    match fetch(http, source_url).await {
         Ok(json) => {
             if let Err(e) = write_cache(cache_path, &json) {
                 tracing::warn!(error = %e, "no se pudo escribir la caché de models.dev");
@@ -206,9 +222,9 @@ pub async fn load(http: &reqwest::Client, cache_path: &Path) -> ModelsDevCatalog
     }
 }
 
-async fn fetch(http: &reqwest::Client) -> Result<Value, String> {
+async fn fetch(http: &reqwest::Client, source_url: &str) -> Result<Value, String> {
     let resp = http
-        .get(SOURCE_URL)
+        .get(source_url)
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -411,6 +427,63 @@ mod tests {
         let read = read_cache_if_fresh(&path).expect("recién escrita, debe estar fresca");
         assert_eq!(read, real_sample());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regresión: una caché reciente anterior al lanzamiento bloqueaba tools
+    /// incluso después de pulsar «Actualizar catálogo».
+    #[tokio::test]
+    async fn explicit_refresh_discovers_tools_missing_from_a_fresh_cache() {
+        let dir = std::env::temp_dir().join(crate::util::new_id("md-refresh"));
+        let path = default_cache_path(&dir);
+        write_cache(&path, &real_sample()).unwrap();
+        let updated = serde_json::json!({
+            "opencode-go": {
+                "api": "https://opencode.ai/zen/go/v1",
+                "models": {"deepseek-v4.1-flash": {"tool_call": true}}
+            }
+        });
+        let served = updated.clone();
+        let app = axum::Router::new().route(
+            "/api.json",
+            axum::routing::get(move || async move { axum::Json(served) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api.json", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+
+        let cached = load_from(&http, &path, &url, false).await;
+        assert!(cached.lookup(Some("opencode-go"), "deepseek-v4.1-flash").is_none());
+        let refreshed = load_from(&http, &path, &url, true).await;
+        server.abort();
+        let on_disk = read_cache_any_age(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(
+            refreshed.lookup(Some("opencode-go"), "deepseek-v4.1-flash")
+                .is_some_and(|entry| entry.caps.tools),
+            "el refresco explícito debe descargar las capacidades del modelo nuevo"
+        );
+        assert_eq!(on_disk, updated);
+    }
+
+    #[tokio::test]
+    async fn explicit_refresh_preserves_cached_capabilities_when_source_fails() {
+        let dir = std::env::temp_dir().join(crate::util::new_id("md-offline"));
+        let path = default_cache_path(&dir);
+        write_cache(&path, &real_sample()).unwrap();
+        let app = axum::Router::new().route(
+            "/api.json",
+            axum::routing::get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api.json", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let catalog = load_from(&reqwest::Client::new(), &path, &url, true).await;
+        server.abort();
+        assert!(catalog.lookup(Some("opencode"), "claude-haiku-4-5").unwrap().caps.tools);
+        assert_eq!(read_cache_any_age(&path).unwrap(), real_sample());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
