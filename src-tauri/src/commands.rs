@@ -415,7 +415,7 @@ pub fn catalog(state: State<'_, AppState>) -> CmdResult<Vec<CatalogRow>> {
 #[tauri::command]
 pub async fn refresh_catalog(state: State<'_, AppState>) -> CmdResult<Vec<CatalogRefresh>> {
     let nexo = state.nexo.clone();
-    Ok(nexo.refresh_catalog_from_providers().await)
+    Ok(nexo.force_refresh_models_dev_then_catalogs().await)
 }
 
 #[tauri::command]
