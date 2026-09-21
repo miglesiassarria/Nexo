@@ -6,12 +6,12 @@
     <meta name="theme-color" content="#07152c" />
     <meta
       name="description"
-      content="Nexo es un gateway local y extensible que conecta todas tus aplicaciones con modelos de IA, suscripciones y proveedores desde un único punto de acceso."
+      content="Nexo es un gateway local y extensible que conecta tus aplicaciones con modelos de IA, suscripciones de ChatGPT y Gemini y proveedores API desde un único punto de acceso."
     />
     <meta property="og:title" content="Nexo — Tu IA, un solo punto de acceso" />
     <meta
       property="og:description"
-      content="Gateway local compatible con OpenAI, permisos por aplicación y estadísticas honestas."
+      content="Gateway local compatible con OpenAI, suscripciones de ChatGPT y Gemini, permisos por aplicación y estadísticas honestas."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://miglesiassarria.github.io/Nexo/" />
@@ -59,9 +59,9 @@
           <div class="eyebrow"><span class="pulse"></span> Gateway local · código abierto</div>
           <h1>Tu IA.<br /><em>Un solo nexo.</em></h1>
           <p class="hero-lead">
-            Conecta tus aplicaciones a ChatGPT, OpenAI, Gemini, OpenRouter, LM Studio y cualquier
-            proveedor compatible desde una sola URL. Tus credenciales y tus estadísticas se quedan
-            en tu equipo.
+            Conecta tus aplicaciones a ChatGPT, Gemini —incluida tu suscripción—, OpenAI, OpenRouter,
+            LM Studio y cualquier proveedor compatible desde una sola URL. Tus credenciales y tus
+            estadísticas se quedan en tu equipo.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#empezar">Configurar en 4 pasos</a>
@@ -97,7 +97,8 @@
             <div class="signal-line reverse"><i></i><i></i><i></i></div>
             <div class="provider-stack">
               <div class="provider-pill active"><span class="provider-mark openai">O</span> ChatGPT <b>OAuth</b></div>
-              <div class="provider-pill"><span class="provider-mark gemini">✦</span> Gemini <b>API</b></div>
+              <div class="provider-pill"><span class="provider-mark gemini">✦</span> Gemini <b>Suscripción</b></div>
+              <div class="provider-pill"><span class="provider-mark gemini">✦</span> Gemini <b>API key</b></div>
               <div class="provider-pill"><span class="provider-mark local">L</span> LM Studio <b>Local</b></div>
             </div>
           </div>
@@ -233,6 +234,10 @@
             <span>API key compatible</span><span>API + models.dev</span><span class="state verified">Verificado</span>
           </div>
           <div class="provider-row">
+            <span class="provider-name"><i class="brand-orb rainbow">✦</i><b>Gemini</b></span>
+            <span>OAuth de suscripción</span><span>Code Assist · catálogo real</span><span class="state verified">Verificado</span>
+          </div>
+          <div class="provider-row">
             <span class="provider-name"><i class="brand-orb coral">R</i><b>OpenRouter</b></span>
             <span>API key compatible</span><span>API + models.dev</span><span class="state verified">Verificado</span>
           </div>
@@ -249,14 +254,16 @@
         <aside class="risk-callout" data-reveal>
           <span class="risk-icon">!</span>
           <div>
-            <strong>La vía de suscripción no es una integración oficial.</strong>
+            <strong>Las vías de suscripción usan OAuth, no API keys.</strong>
             <p>
-              Nexo reutiliza un flujo OAuth del cliente oficial que funciona hoy, pero puede romperse
-              o incumplir condiciones del proveedor. Antes del login se muestra el riesgo y cada
-              aplicación necesita un límite obligatorio.
+              Para ChatGPT y Gemini, Nexo inicia OAuth con PKCE en el navegador, guarda los tokens en
+              el almacén seguro del sistema y usa la cuota del plan a través del backend del proveedor.
+              En Gemini, la ruta es Code Assist/Antigravity (<code>v1internal</code>), no la API pública.
+              Funciona hoy, pero no es una integración soportada y puede romperse o incumplir condiciones
+              del proveedor. Antes del login se muestra el riesgo y cada aplicación necesita un límite obligatorio.
             </p>
           </div>
-          <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/adr/0001-oauth-de-suscripcion.md">Leer ADR 0001 →</a>
+          <a href="https://github.com/miglesiassarria/Nexo/blob/main/specs/0018-gemini-por-suscripcion/spec.md">Ver la especificación →</a>
         </aside>
       </section>
 
@@ -274,7 +281,7 @@
           </article>
           <article class="step" data-reveal>
             <span class="step-no">02</span>
-            <div><h3>Conecta un proveedor</h3><p>Completa OAuth, pega una API key o deja que Nexo detecte LM Studio.</p></div>
+            <div><h3>Conecta un proveedor</h3><p>Usa OAuth para tu suscripción de ChatGPT o Gemini, pega una API key o deja que Nexo detecte LM Studio.</p></div>
           </article>
           <article class="step" data-reveal>
             <span class="step-no">03</span>
@@ -456,7 +463,7 @@
         <div class="roadmap-columns">
           <div class="roadmap-column done" data-reveal>
             <span class="roadmap-label">DISPONIBLE</span>
-            <ul><li>Gateway y streaming</li><li>ChatGPT por suscripción</li><li>OpenAI API key y respaldo</li><li>Gemini, OpenRouter y Zen</li><li>LM Studio y Ollama en local</li><li>Permisos, límites y estadísticas</li><li>Esfuerzo de razonamiento por aplicación y modelo</li><li>Acceso LAN, sin cifrar</li><li>Tray permanente</li></ul>
+            <ul><li>Gateway y streaming</li><li>ChatGPT y Gemini por suscripción</li><li>OpenAI API key y respaldo</li><li>Gemini API key, OpenRouter y Zen</li><li>LM Studio y Ollama en local</li><li>Permisos, límites y estadísticas</li><li>Esfuerzo de razonamiento por aplicación y modelo</li><li>Acceso LAN, sin cifrar</li><li>Tray permanente</li></ul>
           </div>
           <div class="roadmap-column next" data-reveal data-delay="1">
             <span class="roadmap-label">SIGUIENTE</span>
@@ -472,6 +479,7 @@
         <div class="faq-list">
           <details data-reveal><summary>¿Nexo es un servicio en la nube?<span>+</span></summary><p>No. Es una aplicación que ejecutas en tu equipo. Por defecto el gateway solo escucha en <code>127.0.0.1</code> y las estadísticas no salen de la máquina.</p></details>
           <details data-reveal><summary>¿Puedo usar mi suscripción de ChatGPT?<span>+</span></summary><p>Sí, mediante una vía OAuth validada contra una cuenta real. No es un mecanismo soportado oficialmente, puede cambiar sin aviso y exige aceptar el riesgo y fijar límites por aplicación.</p></details>
+          <details data-reveal><summary>¿Puedo usar mi suscripción de Gemini?<span>+</span></summary><p>Sí. Nexo ofrece una vía separada llamada «Gemini por suscripción»: inicia OAuth 2.0 de Google con PKCE y recibe el callback en un puerto local. Después usa el backend Code Assist/Antigravity de Google (<code>v1internal</code>) para consumir la cuota del plan; no envía la petición a la API pública de Gemini ni necesita una API key. La cuenta debe ser elegible y la ruta no está soportada oficialmente, puede cambiar sin aviso y exige límites por aplicación.</p></details>
           <details data-reveal><summary>¿La compatibilidad con OpenAI significa que todos los modelos hacen lo mismo?<span>+</span></summary><p>No. Nexo unifica el formato, pero conserva capacidades por modelo. Si una aplicación pide herramientas, visión u otra capacidad no soportada, recibe un error 422 explícito.</p></details>
           <details data-reveal><summary>¿Qué guarda Nexo de mis conversaciones?<span>+</span></summary><p>Por defecto, metadatos operativos: aplicación, proveedor, modelo, latencia, errores y uso. El contenido de prompts y respuestas no se guarda por defecto.</p></details>
           <details data-reveal><summary>¿Puedo usarlo desde otro ordenador?<span>+</span></summary><p>Sí, dentro de tu red local y tras activarlo conscientemente. El otro equipo no tiene que aceptar ningún certificado: se conecta por HTTP y sigue necesitando el token de aplicación. La contrapartida es que el tráfico no va cifrado, así que el token es legible para quien esté en la misma red — la decisión y su alternativa están en el <a href="https://github.com/miglesiassarria/Nexo/blob/main/docs/adr/0005-red-local-sin-cifrado.md">ADR 0005</a>. No configura acceso desde Internet.</p></details>
