@@ -340,15 +340,9 @@
 
     <section class="card stack">
       <h2>Catálogo de modelos</h2>
-      <div>
-        <label for="cver">Versión de cliente declarada a ChatGPT</label>
-        <input id="cver" bind:value={settings.codex_client_version} />
-      </div>
       <p class="muted small">
-        El proveedor filtra los modelos que publica según la versión del cliente que
-        los pide. Si sabes que hay una familia más nueva y no aparece, sube este
-        número y pulsa <strong>Actualizar desde el proveedor</strong> en Modelos.
-        No es la versión de Nexo.
+        Nexo busca automáticamente los modelos disponibles al actualizar el catálogo
+        desde la pestaña Modelos.
       </p>
       <p class="muted small">
         Manifiesto local de respaldo: <code>{settings.manifest_version}</code>. Se usa

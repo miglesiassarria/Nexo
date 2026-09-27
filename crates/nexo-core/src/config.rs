@@ -19,8 +19,8 @@ pub struct Settings {
     pub content_retention_days: i64,
     pub log_level: String,
     pub manifest_version: String,
-    /// Versión de cliente que se declara al pedir el catálogo de la vía de
-    /// suscripción. Subirla expone familias de modelos más nuevas.
+    /// Fallback heredado para pedir el catálogo de la vía de suscripción.
+    /// Nexo negocia automáticamente las versiones recientes antes de usarlo.
     pub codex_client_version: String,
     /// Dirección del servidor local de LM Studio.
     pub lmstudio_base_url: String,

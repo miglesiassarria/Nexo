@@ -114,9 +114,11 @@ Dos correcciones al diseño que salieron de esta prueba:
    Dos consecuencias:
 
    - **El catálogo se filtra por versión de cliente declarada.** Pedirlo con una
-     versión baja devuelve una lista corta o vacía. Nexo declara una versión
-     concreta y documentada, ajustable por el usuario. Deliberadamente no se envía
-     un número absurdamente alto: sería afirmar una versión que no existe.
+     versión baja devuelve una lista corta o vacía. Nexo prueba primero la versión
+     alta de compatibilidad que ha verificado contra el endpoint y recurre a
+     versiones alternativas si el proveedor la rechaza o no devuelve modelos.
+     Este valor es un parámetro interno de catálogo, no la versión instalada de
+     Nexo; la ruta sigue siendo no oficial y puede cambiar.
    - **La comprobación de capacidades se movió al servicio.** Estaba en el
      adaptador, contra el manifiesto, y eso habría rechazado como «modelo no
      soportado» cualquier familia nueva descubierta. Ahora se comprueba contra el

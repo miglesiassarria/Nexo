@@ -7,7 +7,8 @@
 //! client_id público del cliente oficial de línea de comandos y en el backend
 //! de la aplicación de ChatGPT. Ver `docs/adr/0001-oauth-de-suscripcion.md`.
 //!
-//! ÚLTIMA VERIFICACIÓN: 2026-07-30.
+//! Última verificación del flujo OAuth: 2026-07-30; negociación del catálogo:
+//! 2026-09-27.
 //!
 //! Si algo aquí deja de funcionar, el adaptador debe devolver
 //! `AdapterError::SubscriptionPathBroken` para que la interfaz pueda explicar
@@ -28,20 +29,20 @@ pub const API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses"
 /// Catálogo de modelos de esa misma vía. Exige el parámetro `client_version`.
 pub const MODELS_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/models";
 
-/// Versión de cliente que Nexo declara al pedir el catálogo.
+/// Primera versión probada al pedir el catálogo de Codex.
 ///
-/// El endpoint filtra los modelos por `minimal_client_version`: pedir con una
-/// versión baja devuelve una lista corta o vacía. Este valor NO es la versión de
-/// Nexo, es la del cliente oficial cuyo catálogo se solicita, y por eso vive
-/// aquí, con el resto de lo frágil.
-///
-/// Se fija en la versión mínima que expone la familia vigente en la última
-/// verificación (2026-07-31: `gpt-5.6-*` exige 0.144.0). Cuando aparezca una
-/// familia nueva habrá que subirlo; el usuario puede hacerlo desde la
-/// configuración sin esperar a una versión de Nexo.
-///
-/// Deliberadamente NO se envía un número absurdamente alto: sería afirmar una
-/// versión que no existe.
+/// El endpoint filtra los modelos por `minimal_client_version`. Hermes y una
+/// consulta autenticada de Nexo verificaron que `99.0.0` devuelve el catálogo
+/// actual, incluida la familia GPT-6 (2026-09-27). No es la versión de Nexo ni
+/// una versión instalada del cliente: es una señal interna de compatibilidad
+/// para este endpoint no documentado.
+pub const LATEST_CATALOG_CLIENT_VERSION: &str = "99.0.0";
+
+/// Última versión concreta verificada como alternativa a la señal más reciente.
+pub const FALLBACK_CATALOG_CLIENT_VERSION: &str = "0.155.0";
+
+/// Valor histórico persistido en instalaciones anteriores. Se conserva como
+/// última alternativa para mantener compatibilidad si cambian los valores nuevos.
 pub const DEFAULT_CLIENT_VERSION: &str = "0.144.0";
 /// El puerto es parte del `redirect_uri` registrado: no es configurable.
 pub const CALLBACK_PORT: u16 = 1455;

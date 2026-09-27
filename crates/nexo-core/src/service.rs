@@ -2596,8 +2596,8 @@ pub struct GatewayBindPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::ModelDescriptor;
-    use crate::secrets::MemorySecretStore;
+    use crate::provider::{chatgpt_subscription::ChatgptSubscriptionAdapter, ModelDescriptor};
+    use crate::secrets::{MemorySecretStore, SecretRef};
 
     fn nexo() -> Arc<Nexo> {
         Nexo::new(
@@ -2605,6 +2605,78 @@ mod tests {
             Arc::new(MemorySecretStore::default()),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_chatgpt_catalog_refresh_keeps_the_previous_models() {
+        use axum::{http::StatusCode, routing::get, Router};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/models",
+            get(|| async { (StatusCode::UNAUTHORIZED, "expired") }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut n = nexo();
+        let account_id = "acc-chatgpt-catalog-test";
+        n.secrets
+            .set(&SecretRef::access(account_id), "access-token")
+            .unwrap();
+        n.db.upsert_account(&Account {
+            id: account_id.into(),
+            provider_id: "openai".into(),
+            credential_kind: CredentialKind::SubscriptionOauth,
+            label: "ChatGPT test".into(),
+            keychain_ref: Some(SecretRef::access(account_id).as_str().into()),
+            external_id: Some("test-external-id".into()),
+            scopes: None,
+            expires_at: None,
+            status: "active".into(),
+            risk_ack_at: Some(1),
+            created_at: 1,
+            last_used_at: None,
+            provider_metadata: None,
+        })
+        .unwrap();
+        n.db.replace_models(
+            "openai",
+            CredentialKind::SubscriptionOauth,
+            &crate::catalog::chatgpt_subscription_models(),
+            "test-seed",
+        )
+        .unwrap();
+        Arc::get_mut(&mut n).unwrap().adapters.insert(
+            AdapterId::new("openai", CredentialKind::SubscriptionOauth).slug(),
+            Arc::new(ChatgptSubscriptionAdapter::with_models_endpoint(
+                reqwest::Client::new(),
+                format!("http://{address}/models"),
+            )) as Arc<dyn ProviderAdapter>,
+        );
+
+        let before: Vec<String> =
+            n.db.catalog_rows()
+                .unwrap()
+                .into_iter()
+                .map(|model| model.api_id)
+                .collect();
+        let results = n.refresh_catalog_from_providers().await;
+        let after: Vec<String> =
+            n.db.catalog_rows()
+                .unwrap()
+                .into_iter()
+                .map(|model| model.api_id)
+                .collect();
+        server.abort();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error.is_some());
+        assert_eq!(after, before);
     }
 
     /// La retención existía como botón en Configuración, pero nadie lo pulsaba: sin

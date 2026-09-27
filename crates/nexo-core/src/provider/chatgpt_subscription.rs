@@ -45,6 +45,16 @@ impl ChatgptSubscriptionAdapter {
             client_version: chatgpt::DEFAULT_CLIENT_VERSION.to_string(),
         }
     }
+
+    #[cfg(test)]
+    pub fn with_models_endpoint(http: reqwest::Client, endpoint: impl Into<String>) -> Self {
+        Self {
+            http,
+            endpoint: chatgpt::API_ENDPOINT.to_string(),
+            models_endpoint: endpoint.into(),
+            client_version: chatgpt::DEFAULT_CLIENT_VERSION.to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -64,37 +74,55 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
         &self,
         cred: &ResolvedCredential,
     ) -> Result<Vec<ModelDescriptor>, AdapterError> {
-        let mut request = self
-            .http
-            .get(&self.models_endpoint)
-            .query(&[("client_version", self.client_version.as_str())])
-            .header("authorization", format!("Bearer {}", cred.secret))
-            .header("originator", chatgpt::ORIGINATOR);
-        if let Some(account) = &cred.external_id {
-            request = request.header("ChatGPT-Account-Id", account.as_str());
-        }
+        let mut last_version_error = None;
+        for client_version in catalog_client_versions(&self.client_version) {
+            let mut request = self
+                .http
+                .get(&self.models_endpoint)
+                .query(&[("client_version", client_version)])
+                .header("authorization", format!("Bearer {}", cred.secret))
+                .header("originator", chatgpt::ORIGINATOR);
+            if let Some(account) = &cred.external_id {
+                request = request.header("ChatGPT-Account-Id", account.as_str());
+            }
 
-        let resp = request.send().await.map_err(AdapterError::from_reqwest)?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(classify_http_error(status.as_u16(), None, &text));
-        }
+            let resp = match request.send().await {
+                Ok(resp) => resp,
+                Err(error) => return Err(AdapterError::from_reqwest(error)),
+            };
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                let error = classify_http_error(status.as_u16(), None, &text);
+                // A 400 can mean that the server no longer accepts this
+                // compatibility version. Authentication, quota, and server
+                // failures are independent of the version: do not retry them.
+                if status.as_u16() == 400 {
+                    last_version_error = Some(error);
+                    continue;
+                }
+                return Err(error);
+            }
 
-        let body: serde_json::Value = resp.json().await.map_err(AdapterError::from_reqwest)?;
-        let models = parse_models(&body);
+            let body: serde_json::Value = resp.json().await.map_err(AdapterError::from_reqwest)?;
+            let models = parse_models(&body);
+            if !models.is_empty() {
+                return Ok(models);
+            }
 
-        if models.is_empty() {
-            return Err(AdapterError::Malformed {
+            last_version_error = Some(AdapterError::Malformed {
                 detail: format!(
-                    "el catálogo llegó vacío pidiendo client_version={}. \
-                     Prueba a subirlo en Configuración: el proveedor filtra los \
-                     modelos por versión de cliente.",
-                    self.client_version
+                    "el catálogo llegó vacío pidiendo client_version={client_version}; \
+                     el proveedor filtra los modelos por versión de cliente."
                 ),
             });
         }
-        Ok(models)
+
+        Err(
+            last_version_error.unwrap_or_else(|| AdapterError::Malformed {
+                detail: "no hay versiones de cliente disponibles para consultar el catálogo".into(),
+            }),
+        )
     }
 
     async fn stream(
@@ -215,6 +243,21 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
             Health::Unknown
         }
     }
+}
+
+fn catalog_client_versions(configured_version: &str) -> Vec<&str> {
+    let candidates = [
+        chatgpt::LATEST_CATALOG_CLIENT_VERSION,
+        chatgpt::FALLBACK_CATALOG_CLIENT_VERSION,
+        configured_version,
+    ];
+    let mut unique = Vec::with_capacity(candidates.len());
+    for version in candidates {
+        if !version.trim().is_empty() && !unique.contains(&version) {
+            unique.push(version);
+        }
+    }
+    unique
 }
 
 /// Traduce la respuesta del endpoint de catálogo a descriptores de modelo.
@@ -366,7 +409,167 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::Query, http::StatusCode, routing::get, Json, Router};
     use std::time::Duration;
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    fn test_credential() -> ResolvedCredential {
+        ResolvedCredential {
+            account_id: "account-1".into(),
+            provider_id: PROVIDER.into(),
+            kind: CredentialKind::SubscriptionOauth,
+            secret: "test-access-token".into(),
+            external_id: Some("test-account".into()),
+            provider_metadata: None,
+        }
+    }
+
+    fn test_adapter(models_endpoint: String) -> ChatgptSubscriptionAdapter {
+        ChatgptSubscriptionAdapter {
+            http: reqwest::Client::new(),
+            endpoint: String::new(),
+            models_endpoint,
+            client_version: chatgpt::DEFAULT_CLIENT_VERSION.into(),
+        }
+    }
+
+    async fn serve_models(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/models"), server)
+    }
+
+    #[test]
+    fn catalog_versions_are_ordered_and_deduplicated() {
+        assert_eq!(
+            catalog_client_versions("0.144.0"),
+            vec!["99.0.0", "0.155.0", "0.144.0"]
+        );
+        assert_eq!(catalog_client_versions("99.0.0"), vec!["99.0.0", "0.155.0"]);
+        assert_eq!(catalog_client_versions(""), vec!["99.0.0", "0.155.0"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_falls_back_to_known_version_after_latest_is_rejected() {
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/models",
+            get({
+                let requested = requested.clone();
+                move |Query(query): Query<HashMap<String, String>>| {
+                    let requested = requested.clone();
+                    async move {
+                        let version = query.get("client_version").cloned().unwrap_or_default();
+                        requested.lock().unwrap().push(version.clone());
+                        if version == "99.0.0" {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error":"unsupported version"})),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({"models":[{
+                                    "slug":"gpt-6-sol",
+                                    "visibility":"list",
+                                    "supported_in_api":true,
+                                    "input_modalities":["text"]
+                                }]})),
+                            )
+                        }
+                    }
+                }
+            }),
+        );
+        let (endpoint, server) = serve_models(app).await;
+        let models = test_adapter(endpoint)
+            .catalog(&test_credential())
+            .await
+            .unwrap();
+        server.abort();
+
+        assert_eq!(models[0].api_id, "gpt-6-sol");
+        assert_eq!(*requested.lock().unwrap(), vec!["99.0.0", "0.155.0"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_uses_saved_version_if_new_versions_return_no_models() {
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/models",
+            get({
+                let requested = requested.clone();
+                move |Query(query): Query<HashMap<String, String>>| {
+                    let requested = requested.clone();
+                    async move {
+                        let version = query.get("client_version").cloned().unwrap_or_default();
+                        requested.lock().unwrap().push(version.clone());
+                        let models = if version != "0.144.0" {
+                            vec![]
+                        } else {
+                            vec![serde_json::json!({"slug":"gpt-6-luna","visibility":"list","supported_in_api":true})]
+                        };
+                        (StatusCode::OK, Json(serde_json::json!({"models":models})))
+                    }
+                }
+            }),
+        );
+        let (endpoint, server) = serve_models(app).await;
+        let models = test_adapter(endpoint)
+            .catalog(&test_credential())
+            .await
+            .unwrap();
+        server.abort();
+
+        assert_eq!(models[0].api_id, "gpt-6-luna");
+        assert_eq!(
+            *requested.lock().unwrap(),
+            vec!["99.0.0", "0.155.0", "0.144.0"]
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_does_not_retry_authentication_or_rate_limit_errors() {
+        for (status, expected_kind) in [
+            (StatusCode::UNAUTHORIZED, "auth"),
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        ] {
+            let requested = Arc::new(Mutex::new(Vec::new()));
+            let app = Router::new().route(
+                "/models",
+                get({
+                    let requested = requested.clone();
+                    move |Query(query): Query<HashMap<String, String>>| {
+                        let requested = requested.clone();
+                        async move {
+                            requested
+                                .lock()
+                                .unwrap()
+                                .push(query.get("client_version").cloned().unwrap_or_default());
+                            (status, "provider error")
+                        }
+                    }
+                }),
+            );
+            let (endpoint, server) = serve_models(app).await;
+            let error = test_adapter(endpoint)
+                .catalog(&test_credential())
+                .await
+                .unwrap_err();
+            server.abort();
+
+            assert_eq!(error.kind_str(), expected_kind);
+            assert_eq!(*requested.lock().unwrap(), vec!["99.0.0"]);
+        }
+    }
 
     #[test]
     fn auth_errors_request_reauth() {
