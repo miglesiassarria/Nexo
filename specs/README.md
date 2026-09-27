@@ -27,6 +27,7 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0016](0016-correlacion-tool-calls-responses-api/spec.md) | Correlación de identificadores en llamadas a herramientas de Responses API | `hecho` | Corrige que `ChunkBuilder` cambiaba el índice de 0 a 1 por la disparidad entre `item.id` (`fc_xxx`) y `item.call_id` (`call_xxx`) |
 | [0017](0017-limite-tamano-peticiones/spec.md) | Límite de tamaño de peticiones de chat y archivos | `hecho` | Corrige el 413 en payloads grandes (imágenes base64) con límite configurable (default 32 MiB, 1 MiB–5 GiB / sin límite) e ingestión protegida por disco |
 | [0018](0018-gemini-por-suscripcion/spec.md) | Gemini por suscripción | `build` | Vía OAuth de Antigravity/Code Assist separada de Gemini por API key; validada manualmente con una cuenta real |
+| [0019](0019-actualizar-automaticamente-el-catalogo-de-chatgp/spec.md) | Actualizar automáticamente el catálogo de ChatGPT por suscripción | `build` | Negociación interna de versiones al refrescar para capturar familias nuevas sin ajustes manuales |
 
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 

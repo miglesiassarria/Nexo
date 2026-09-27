@@ -134,8 +134,8 @@ mismo para todos:
 
 - La **vía de suscripción de ChatGPT** publica su catálogo con contexto,
   modalidades y niveles de razonamiento por modelo. Ahí manda el proveedor, y así
-  las familias nuevas aparecen sin esperar a una versión de Nexo. El endpoint
-  filtra por versión de cliente declarada, que es un ajuste de configuración.
+  las familias nuevas aparecen sin esperar a una versión de Nexo. Nexo negocia
+  automáticamente la versión de catálogo; el usuario no tiene que ajustarla.
 - La **API pública** solo dice qué modelos existen, no qué hacen. Ahí las
   capacidades vienen de un manifiesto versionado que se distribuye con la
   aplicación.
