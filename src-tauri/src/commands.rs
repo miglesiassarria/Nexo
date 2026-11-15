@@ -344,6 +344,7 @@ pub fn grantable_routes(state: State<'_, AppState>) -> CmdResult<Vec<GrantableRo
 pub struct AppDetail {
     pub grants: Vec<Grant>,
     pub limits: Vec<Limit>,
+    pub disabled_limits: Vec<(String, String)>,
 }
 
 #[tauri::command]
@@ -352,7 +353,25 @@ pub fn app_detail(state: State<'_, AppState>, app_id: String) -> CmdResult<AppDe
     Ok(AppDetail {
         grants: db.grants(&app_id).map_err(map_err)?,
         limits: db.limits(&app_id).map_err(map_err)?,
+        disabled_limits: db.disabled_limits(&app_id).map_err(map_err)?,
     })
+}
+
+#[tauri::command]
+pub fn set_limit_disabled(
+    state: State<'_, AppState>,
+    app_id: String,
+    provider_id: String,
+    credential_kind: String,
+    disabled: bool,
+) -> CmdResult<()> {
+    let kind = CredentialKind::parse(&credential_kind)
+        .ok_or_else(|| format!("vía desconocida: {credential_kind}"))?;
+    state
+        .nexo
+        .db()
+        .set_limit_disabled(&app_id, &provider_id, kind, disabled)
+        .map_err(map_err)
 }
 
 /// Los modelos de una vía con si esta aplicación los tiene marcados.

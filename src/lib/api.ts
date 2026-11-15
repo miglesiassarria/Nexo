@@ -149,6 +149,7 @@ export interface GrantableRoute {
 export interface AppDetail {
   grants: Grant[];
   limits: Limit[];
+  disabled_limits: [string, string][];
 }
 
 export interface Capabilities {
@@ -373,6 +374,7 @@ export const api = {
   grantableRoutes: () => invoke<GrantableRoute[]>("grantable_routes"),
   appRouteModels: (args: { appId: string; providerId: string; credentialKind: string }) =>
     invoke<RouteModels>("app_route_models", args),
+  setLimitDisabled: (args: { appId: string; providerId: string; credentialKind: string; disabled: boolean }) => invoke<void>("set_limit_disabled", args),
   setAppModels: (args: {
     appId: string;
     providerId: string;

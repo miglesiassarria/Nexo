@@ -97,7 +97,11 @@ impl WireChatRequest {
         format!("nexo-{}", util::sha256_hex(&seed))
     }
 
-    pub fn into_internal(self, api_model: String, public_model: String) -> Result<ChatRequest, String> {
+    pub fn into_internal(
+        self,
+        api_model: String,
+        public_model: String,
+    ) -> Result<ChatRequest, String> {
         if self.messages.is_empty() {
             return Err("`messages` no puede estar vacío".into());
         }
@@ -255,7 +259,12 @@ impl WireMessage {
             })
             .collect();
 
-        Ok(Message { role, parts, tool_call_id: self.tool_call_id, tool_calls })
+        Ok(Message {
+            role,
+            parts,
+            tool_call_id: self.tool_call_id,
+            tool_calls,
+        })
     }
 }
 
@@ -364,10 +373,7 @@ impl ChunkBuilder {
             u.insert("total_tokens".into(), json!(v));
         }
         if let Some(v) = usage.cached_input_tokens {
-            u.insert(
-                "prompt_tokens_details".into(),
-                json!({"cached_tokens": v}),
-            );
+            u.insert("prompt_tokens_details".into(), json!({"cached_tokens": v}));
         }
         if let Some(v) = usage.reasoning_tokens {
             u.insert(
@@ -459,16 +465,17 @@ pub fn error_body(err: &AdapterError) -> Value {
                 ),
             );
         }
-        AdapterError::LocalLimit { app_id, window_secs, detail } => {
+        AdapterError::LocalLimit {
+            app_id,
+            window_secs,
+            detail,
+        } => {
             nexo.insert("app_id".into(), json!(app_id));
             nexo.insert("window_seconds".into(), json!(window_secs));
             nexo.insert("detail".into(), json!(detail));
-            nexo.insert(
-                "limited_by".into(),
-                json!("nexo"),
-            );
+            nexo.insert("limited_by".into(), json!("nexo"));
         }
-        AdapterError::RateLimited { retry_after } => {
+        AdapterError::RateLimited { retry_after, .. } => {
             nexo.insert("limited_by".into(), json!("provider"));
             if let Some(d) = retry_after {
                 nexo.insert("retry_after_seconds".into(), json!(d.as_secs()));
@@ -480,7 +487,9 @@ pub fn error_body(err: &AdapterError) -> Value {
                 nexo.insert("hint".into(), json!(h));
             }
         }
-        AdapterError::Auth { reauth_required, .. } => {
+        AdapterError::Auth {
+            reauth_required, ..
+        } => {
             nexo.insert("reauth_required".into(), json!(reauth_required));
         }
         _ => {}
@@ -613,7 +622,10 @@ mod tests {
         let w = parse(json!({
             "model": "m", "messages": [{"role": "user", "content": "x"}], "stop": "FIN"
         }));
-        assert_eq!(w.into_internal("m".into(), "p/m".into()).unwrap().stop, vec!["FIN"]);
+        assert_eq!(
+            w.into_internal("m".into(), "p/m".into()).unwrap().stop,
+            vec!["FIN"]
+        );
 
         let w = parse(json!({
             "model": "m", "messages": [{"role": "user", "content": "x"}],
@@ -642,7 +654,9 @@ mod tests {
                 "tool_choice": raw
             }));
             assert_eq!(
-                w.into_internal("m".into(), "p/m".into()).unwrap().tool_choice,
+                w.into_internal("m".into(), "p/m".into())
+                    .unwrap()
+                    .tool_choice,
                 expected
             );
         }
@@ -687,9 +701,18 @@ mod tests {
     #[test]
     fn tool_chunks_keep_a_stable_index_per_call_id() {
         let mut b = ChunkBuilder::new("m");
-        assert_eq!(b.tool_start_chunk("a", "t1")["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
-        assert_eq!(b.tool_start_chunk("b", "t2")["choices"][0]["delta"]["tool_calls"][0]["index"], 1);
-        assert_eq!(b.tool_args_chunk("a", "{}")["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
+        assert_eq!(
+            b.tool_start_chunk("a", "t1")["choices"][0]["delta"]["tool_calls"][0]["index"],
+            0
+        );
+        assert_eq!(
+            b.tool_start_chunk("b", "t2")["choices"][0]["delta"]["tool_calls"][0]["index"],
+            1
+        );
+        assert_eq!(
+            b.tool_args_chunk("a", "{}")["choices"][0]["delta"]["tool_calls"][0]["index"],
+            0
+        );
     }
 
     #[test]
@@ -762,6 +785,7 @@ mod tests {
 
         let remote = error_body(&AdapterError::RateLimited {
             retry_after: Some(std::time::Duration::from_secs(30)),
+            detail: "El proveedor rechazó la petición".into(),
         });
         assert_eq!(remote["error"]["nexo"]["limited_by"], "provider");
         assert_eq!(remote["error"]["nexo"]["retry_after_seconds"], 30);

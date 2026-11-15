@@ -53,7 +53,10 @@ async fn not_found() -> Response {
 
 /// Extrae el bearer token. Nexo no acepta credenciales por query string.
 fn bearer(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let token = raw
         .strip_prefix("Bearer ")
         .or_else(|| raw.strip_prefix("bearer "))?;
@@ -97,7 +100,11 @@ fn adapter_response(err: &AdapterError) -> Response {
     let status =
         StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, Json(error_body(err))).into_response();
-    if let AdapterError::RateLimited { retry_after: Some(d) } = err {
+    if let AdapterError::RateLimited {
+        retry_after: Some(d),
+        ..
+    } = err
+    {
         if let Ok(value) = d.as_secs().to_string().parse() {
             response.headers_mut().insert("retry-after", value);
         }
@@ -245,9 +252,7 @@ fn stream_response(
                 Ok(event) => {
                     collector.observe(&event);
                     match &event {
-                        ChatEvent::TextDelta { text } => {
-                            out.push(sse(builder.text_chunk(text)))
-                        }
+                        ChatEvent::TextDelta { text } => out.push(sse(builder.text_chunk(text))),
                         ChatEvent::ReasoningDelta { text } => {
                             out.push(sse(builder.reasoning_chunk(text)))
                         }
@@ -370,8 +375,14 @@ mod tests {
 
     #[test]
     fn bearer_accepts_both_capitalisations() {
-        assert_eq!(bearer(&headers_with("Bearer nx_a")).as_deref(), Some("nx_a"));
-        assert_eq!(bearer(&headers_with("bearer nx_a")).as_deref(), Some("nx_a"));
+        assert_eq!(
+            bearer(&headers_with("Bearer nx_a")).as_deref(),
+            Some("nx_a")
+        );
+        assert_eq!(
+            bearer(&headers_with("bearer nx_a")).as_deref(),
+            Some("nx_a")
+        );
     }
 
     #[test]
@@ -386,6 +397,7 @@ mod tests {
     fn rate_limit_response_carries_retry_after_header() {
         let err = AdapterError::RateLimited {
             retry_after: Some(Duration::from_secs(42)),
+            detail: "El proveedor rechazó la petición".into(),
         };
         let resp = adapter_response(&err);
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);

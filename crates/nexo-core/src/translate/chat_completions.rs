@@ -179,7 +179,9 @@ pub fn translate_chunk(chunk: &Value, tool_ids: &mut ToolCallIds) -> Vec<ChatEve
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
     {
-        events.push(ChatEvent::TextDelta { text: text.to_string() });
+        events.push(ChatEvent::TextDelta {
+            text: text.to_string(),
+        });
     }
 
     // Dos nombres de campo distintos observados entre proveedores para lo mismo:
@@ -191,10 +193,15 @@ pub fn translate_chunk(chunk: &Value, tool_ids: &mut ToolCallIds) -> Vec<ChatEve
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
     if let Some(text) = reasoning_text {
-        events.push(ChatEvent::ReasoningDelta { text: text.to_string() });
+        events.push(ChatEvent::ReasoningDelta {
+            text: text.to_string(),
+        });
     }
 
-    if let Some(calls) = choice.pointer("/delta/tool_calls").and_then(|v| v.as_array()) {
+    if let Some(calls) = choice
+        .pointer("/delta/tool_calls")
+        .and_then(|v| v.as_array())
+    {
         for call in calls {
             let index = call.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             let id = match call.get("id").and_then(|v| v.as_str()) {
@@ -210,7 +217,10 @@ pub fn translate_chunk(chunk: &Value, tool_ids: &mut ToolCallIds) -> Vec<ChatEve
                     .unwrap_or_else(|| format!("call_{index}")),
             };
             if let Some(name) = call.pointer("/function/name").and_then(|v| v.as_str()) {
-                events.push(ChatEvent::ToolCallStart { id: id.clone(), name: name.to_string() });
+                events.push(ChatEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.to_string(),
+                });
             }
             if let Some(args) = call
                 .pointer("/function/arguments")
@@ -226,7 +236,9 @@ pub fn translate_chunk(chunk: &Value, tool_ids: &mut ToolCallIds) -> Vec<ChatEve
     }
 
     if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-        events.push(ChatEvent::Finished { reason: finish_reason(reason) });
+        events.push(ChatEvent::Finished {
+            reason: finish_reason(reason),
+        });
     }
 
     events
@@ -250,7 +262,9 @@ pub fn stream_from_response(resp: reqwest::Response) -> EventStream {
     let mut tool_ids = ToolCallIds::new();
     let stream = resp.bytes_stream().eventsource().flat_map(move |item| {
         let out: Vec<Result<ChatEvent, AdapterError>> = match item {
-            Err(e) => vec![Err(AdapterError::Transport { detail: e.to_string() })],
+            Err(e) => vec![Err(AdapterError::Transport {
+                detail: e.to_string(),
+            })],
             Ok(event) => {
                 if event.data.trim() == "[DONE]" {
                     vec![]
@@ -311,7 +325,10 @@ fn classify_by_status(
             reason: "la credencial fue rechazada".into(),
             reauth_required: true,
         },
-        429 => AdapterError::RateLimited { retry_after },
+        429 => AdapterError::RateLimited {
+            retry_after,
+            detail: "El proveedor rechazó la petición".into(),
+        },
         s => AdapterError::Upstream {
             status: s,
             provider_code: None,
@@ -353,10 +370,14 @@ fn parse_error_envelope(body: &str, status: u16) -> Option<AdapterError> {
                 capability: "model".into(),
                 hint: Some(message),
             },
-            "AuthError" => AdapterError::Auth { reason: message, reauth_required: true },
-            "RateLimitError" | "rate_limit_exceeded" => {
-                AdapterError::RateLimited { retry_after: None }
-            }
+            "AuthError" => AdapterError::Auth {
+                reason: message,
+                reauth_required: true,
+            },
+            "RateLimitError" | "rate_limit_exceeded" => AdapterError::RateLimited {
+                retry_after: None,
+                detail: "El proveedor rechazó la petición".into(),
+            },
             _ => AdapterError::Upstream {
                 status,
                 provider_code: Some(kind.to_string()),
@@ -376,15 +397,18 @@ fn parse_error_envelope(body: &str, status: u16) -> Option<AdapterError> {
     let message = message.unwrap_or(google_status).to_string();
     let lower = message.to_ascii_lowercase();
     match google_status {
-        "UNAUTHENTICATED" | "PERMISSION_DENIED" => {
-            Some(AdapterError::Auth { reason: message, reauth_required: true })
-        }
-        "INVALID_ARGUMENT" if lower.contains("api key") => {
-            Some(AdapterError::Auth { reason: message, reauth_required: true })
-        }
-        "NOT_FOUND" if lower.contains("model") => {
-            Some(AdapterError::Unsupported { capability: "model".into(), hint: Some(message) })
-        }
+        "UNAUTHENTICATED" | "PERMISSION_DENIED" => Some(AdapterError::Auth {
+            reason: message,
+            reauth_required: true,
+        }),
+        "INVALID_ARGUMENT" if lower.contains("api key") => Some(AdapterError::Auth {
+            reason: message,
+            reauth_required: true,
+        }),
+        "NOT_FOUND" if lower.contains("model") => Some(AdapterError::Unsupported {
+            capability: "model".into(),
+            hint: Some(message),
+        }),
         _ => None,
     }
 }
@@ -531,7 +555,9 @@ mod tests {
         let chunk = json!({"choices": [{"delta": {}, "finish_reason": "length"}]});
         assert!(matches!(
             translate_chunk(&chunk, &mut ToolCallIds::new())[0],
-            ChatEvent::Finished { reason: FinishReason::Length }
+            ChatEvent::Finished {
+                reason: FinishReason::Length
+            }
         ));
     }
 
@@ -605,7 +631,9 @@ mod tests {
         let by_id: std::collections::HashMap<_, _> = events
             .iter()
             .filter_map(|e| match e {
-                ChatEvent::ToolCallDelta { id, args_json } => Some((id.as_str(), args_json.as_str())),
+                ChatEvent::ToolCallDelta { id, args_json } => {
+                    Some((id.as_str(), args_json.as_str()))
+                }
                 _ => None,
             })
             .collect();
@@ -639,13 +667,20 @@ mod tests {
 
     #[test]
     fn empty_chunk_yields_nothing() {
-        assert!(translate_chunk(&json!({"choices": [{"delta": {}}]}), &mut ToolCallIds::new()).is_empty());
+        assert!(translate_chunk(
+            &json!({"choices": [{"delta": {}}]}),
+            &mut ToolCallIds::new()
+        )
+        .is_empty());
     }
 
     #[test]
     fn http_errors_without_a_recognisable_envelope_fall_back_to_status() {
         assert_eq!(classify_http_error(401, None, "").http_status(), 401);
-        assert_eq!(classify_http_error(429, None, "").kind_str(), "rate_limited");
+        assert_eq!(
+            classify_http_error(429, None, "").kind_str(),
+            "rate_limited"
+        );
         assert_eq!(classify_http_error(503, None, "").kind_str(), "upstream");
     }
 
@@ -658,8 +693,14 @@ mod tests {
         let body = r#"{"type":"error","error":{"type":"CreditsError","message":"Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_01KN81JJVZJ890QY3PCB3CPPS4/billing"}}"#;
         let err = classify_http_error(401, None, body);
         match &err {
-            AdapterError::Auth { reason, reauth_required } => {
-                assert!(reason.contains("saldo"), "debe explicar que es de saldo: {reason}");
+            AdapterError::Auth {
+                reason,
+                reauth_required,
+            } => {
+                assert!(
+                    reason.contains("saldo"),
+                    "debe explicar que es de saldo: {reason}"
+                );
                 assert!(
                     !reauth_required,
                     "reconectar la cuenta no arregla un problema de saldo"
@@ -686,7 +727,9 @@ mod tests {
     fn zen_auth_error_still_asks_to_reconnect() {
         let body = r#"{"type":"error","error":{"type":"AuthError","message":"Missing API key."}}"#;
         match classify_http_error(401, None, body) {
-            AdapterError::Auth { reauth_required, .. } => assert!(reauth_required),
+            AdapterError::Auth {
+                reauth_required, ..
+            } => assert!(reauth_required),
             other => panic!("esperaba Auth, llegó {other:?}"),
         }
     }
@@ -695,8 +738,15 @@ mod tests {
     fn an_unrecognised_error_type_keeps_the_real_http_status() {
         let body = r#"{"type":"error","error":{"type":"SomeNewErrorType","message":"boom"}}"#;
         match classify_http_error(500, None, body) {
-            AdapterError::Upstream { status, provider_code, .. } => {
-                assert_eq!(status, 500, "no debe inventarse un status distinto del real");
+            AdapterError::Upstream {
+                status,
+                provider_code,
+                ..
+            } => {
+                assert_eq!(
+                    status, 500,
+                    "no debe inventarse un status distinto del real"
+                );
                 assert_eq!(provider_code.as_deref(), Some("SomeNewErrorType"));
             }
             other => panic!("esperaba Upstream, llegó {other:?}"),
@@ -721,8 +771,14 @@ mod tests {
     fn gemini_invalid_api_key_is_recognised_despite_the_400_status() {
         let body = r#"{"error":{"code":400,"message":"Please pass a valid API key","status":"INVALID_ARGUMENT"}}"#;
         match classify_http_error(400, None, body) {
-            AdapterError::Auth { reason, reauth_required } => {
-                assert!(reason.contains("API key"), "debe conservar el motivo real: {reason}");
+            AdapterError::Auth {
+                reason,
+                reauth_required,
+            } => {
+                assert!(
+                    reason.contains("API key"),
+                    "debe conservar el motivo real: {reason}"
+                );
                 assert!(reauth_required);
             }
             other => panic!("esperaba Auth, llegó {other:?}"),

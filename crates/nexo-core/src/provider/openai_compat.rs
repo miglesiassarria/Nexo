@@ -106,7 +106,10 @@ impl OpenAiCompatAdapter {
         cred.provider_id == "opencode-go" || base == OPENCODE_GO_BASE_URL
     }
 
-    fn opencode_go_session(req: &crate::provider::ChatRequest, cred: &ResolvedCredential) -> String {
+    fn opencode_go_session(
+        req: &crate::provider::ChatRequest,
+        cred: &ResolvedCredential,
+    ) -> String {
         if let Some(session) = req.opencode_session.as_deref().filter(|s| !s.is_empty()) {
             return session.to_string();
         }
@@ -461,7 +464,7 @@ mod tests {
             .stream(&req, &cred(Some(&format!("http://{addr}"))))
             .await
         {
-            Err(AdapterError::RateLimited { retry_after }) => {
+            Err(AdapterError::RateLimited { retry_after, .. }) => {
                 assert_eq!(retry_after, Some(std::time::Duration::from_secs(17)))
             }
             Err(other) => panic!("esperaba RateLimited con retry_after, llegó {other:?}"),
@@ -477,7 +480,9 @@ mod tests {
 
         async fn require_session(headers: HeaderMap) -> impl IntoResponse {
             if headers.contains_key("x-opencode-session")
-                && headers.get("user-agent").and_then(|value| value.to_str().ok())
+                && headers
+                    .get("user-agent")
+                    .and_then(|value| value.to_str().ok())
                     == Some(NEXO_USER_AGENT)
             {
                 (axum::http::StatusCode::OK, "data: [DONE]\n\n")

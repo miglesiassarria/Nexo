@@ -102,9 +102,7 @@ haga explícito.
    desconocida, y confundirlos es exactamente lo que el producto promete no hacer.
    Cuando el proveedor no informa, se marca no disponible; no se inventa una cifra.
 
-4. **Los límites por aplicación son obligatorios en las vías de suscripción.** Es
-   la mitigación del riesgo de multiplexación del ADR 0001, no una preferencia.
-   Sin límite, Nexo se niega a atender la petición.
+4. **Los límites de suscripción están activos por defecto y pueden desactivarse explícitamente por aplicación y vía.** Una configuración ausente o inválida no equivale a desactivación. Ver [ADR 0008](docs/adr/0008-limites-opcionales-por-aplicacion.md).
 
 5. **El eje de credencial es de primer nivel.** El catálogo, los permisos, los
    límites y las estadísticas se indexan por proveedor **y** tipo de credencial. El

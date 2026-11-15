@@ -1,9 +1,7 @@
 //! Políticas, permisos y límites por aplicación.
 //!
-//! Los límites en rutas de suscripción NO son una preferencia: son la
-//! mitigación del riesgo de multiplexación del ADR 0001. Nexo multiplexa N
-//! aplicaciones sobre una cuota personal, y ese patrón es el que un proveedor
-//! interpreta como abuso.
+//! Las vías de suscripción exigen límite salvo desactivación explícita por
+//! aplicación y vía, según el ADR 0008.
 
 use crate::apps::{Grant, Limit};
 use crate::db::Db;
@@ -63,7 +61,10 @@ pub struct PolicyEngine {
 
 impl PolicyEngine {
     pub fn new(db: Db) -> Self {
-        Self { db, tracker: RateTracker::default() }
+        Self {
+            db,
+            tracker: RateTracker::default(),
+        }
     }
 
     pub fn tracker(&self) -> &RateTracker {
@@ -108,7 +109,9 @@ impl PolicyEngine {
         let grants = self
             .db
             .grants(app_id)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?;
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?;
 
         // Sin fila no hay permiso: el acceso se concede, no se deniega.
         let grant = grant_for(&grants, provider_id, kind.as_str(), public_model)
@@ -126,17 +129,14 @@ impl PolicyEngine {
         if !grant.allow_tools && !req.tools.is_empty() {
             return Err(AdapterError::Unsupported {
                 capability: "tools".into(),
-                hint: Some(
-                    "esta aplicación no tiene permiso para usar herramientas".into(),
-                ),
+                hint: Some("esta aplicación no tiene permiso para usar herramientas".into()),
             });
         }
 
-        let sends_media = req.messages.iter().any(|m| {
-            m.parts
-                .iter()
-                .any(|p| !matches!(p, ContentPart::Text(_)))
-        });
+        let sends_media = req
+            .messages
+            .iter()
+            .any(|m| m.parts.iter().any(|p| !matches!(p, ContentPart::Text(_))));
         if !grant.allow_multimodal && sends_media {
             return Err(AdapterError::Unsupported {
                 capability: "multimodal".into(),
@@ -149,16 +149,28 @@ impl PolicyEngine {
         let limits = self
             .db
             .limits(app_id)
-            .map_err(|e| AdapterError::Transport { detail: e.to_string() })?;
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?;
         let applicable: Vec<Limit> = limits
             .into_iter()
             .filter(|l| l.provider_id == provider_id && l.credential_kind == kind.as_str())
             .collect();
 
-        // Cerrojo del ADR 0001: la vía de suscripción no funciona sin límite.
-        // Es más seguro rechazar que dejar la cuota personal sin protección.
+        let disabled = self
+            .db
+            .disabled_limits(app_id)
+            .map_err(|e| AdapterError::Transport {
+                detail: e.to_string(),
+            })?
+            .iter()
+            .any(|(provider, credential)| provider == provider_id && credential == kind.as_str());
+        // Una configuración ausente no equivale a una desactivación explícita.
+        // Una configuración incompleta sigue cerrada.
         if kind.requires_app_limit()
-            && !applicable.iter().any(|l| l.max_requests.is_some())
+            && !applicable
+                .iter()
+                .any(|l| l.max_requests.is_some_and(|max| max > 0))
         {
             return Err(AdapterError::LocalLimit {
                 app_id: app_id.to_string(),
@@ -170,9 +182,15 @@ impl PolicyEngine {
             });
         }
 
+        if disabled {
+            return Ok(PolicyDecision { grant, limit: None });
+        }
+
         let mut tightest: Option<(Limit, i64)> = None;
         for limit in applicable {
-            let Some(max) = limit.max_requests else { continue };
+            let Some(max) = limit.max_requests else {
+                continue;
+            };
             let used = self.tracker.count(
                 app_id,
                 provider_id,
@@ -197,7 +215,10 @@ impl PolicyEngine {
             }
         }
 
-        Ok(PolicyDecision { grant, limit: tightest })
+        Ok(PolicyDecision {
+            grant,
+            limit: tightest,
+        })
     }
 
     /// Cuenta una petición admitida en todas sus ventanas.
@@ -438,18 +459,28 @@ mod tests {
         ];
 
         // Exacto gana a prefijo y a comodín.
-        let exact = grant_for(&grants, "openai", "subscription_oauth", "openai/gpt-5.6-sol")
-            .expect("hay permiso");
+        let exact = grant_for(
+            &grants,
+            "openai",
+            "subscription_oauth",
+            "openai/gpt-5.6-sol",
+        )
+        .expect("hay permiso");
         assert_eq!(exact.model_pattern, "openai/gpt-5.6-sol");
 
         // Sin fila exacta, el prefijo gana al comodín.
-        let prefix = grant_for(&grants, "openai", "subscription_oauth", "openai/gpt-5.6-mini")
-            .expect("hay permiso");
+        let prefix = grant_for(
+            &grants,
+            "openai",
+            "subscription_oauth",
+            "openai/gpt-5.6-mini",
+        )
+        .expect("hay permiso");
         assert_eq!(prefix.model_pattern, "openai/gpt-5.6*");
 
         // Y el comodín sigue cubriendo lo que no encaja en nada más concreto.
-        let wildcard = grant_for(&grants, "openai", "subscription_oauth", "openai/otro")
-            .expect("hay permiso");
+        let wildcard =
+            grant_for(&grants, "openai", "subscription_oauth", "openai/otro").expect("hay permiso");
         assert_eq!(wildcard.model_pattern, "*");
     }
 
@@ -492,6 +523,18 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind_str(), "local_limit");
         assert!(err.to_string().contains("límite local"));
+    }
+
+    #[test]
+    fn explicitly_disabled_limit_is_scoped_and_can_be_restored() {
+        let (engine, app_id) = setup(CredentialKind::SubscriptionOauth, Some(1));
+        engine.record(&app_id, "openai", CredentialKind::SubscriptionOauth);
+        assert!(engine.check(&app_id, "openai", CredentialKind::SubscriptionOauth, "openai/gpt-5.5", &req()).is_err());
+        engine.db.set_limit_disabled(&app_id, "openai", CredentialKind::SubscriptionOauth, true).unwrap();
+        assert!(engine.check(&app_id, "openai", CredentialKind::SubscriptionOauth, "openai/gpt-5.5", &req()).unwrap().limit.is_none());
+        assert!(engine.db.set_limit_disabled(&app_id, "other", CredentialKind::SubscriptionOauth, true).is_err());
+        engine.db.set_limit_disabled(&app_id, "openai", CredentialKind::SubscriptionOauth, false).unwrap();
+        assert_eq!(engine.check(&app_id, "openai", CredentialKind::SubscriptionOauth, "openai/gpt-5.5", &req()).unwrap_err().kind_str(), "local_limit");
     }
 
     #[test]
@@ -550,7 +593,13 @@ mod tests {
             parameters: serde_json::json!({}),
         }];
         let err = engine
-            .check(&app_id, "openai", CredentialKind::ApiKey, "openai/gpt-5.5", &r)
+            .check(
+                &app_id,
+                "openai",
+                CredentialKind::ApiKey,
+                "openai/gpt-5.5",
+                &r,
+            )
             .unwrap_err();
         assert_eq!(err.http_status(), 422);
     }
@@ -563,7 +612,13 @@ mod tests {
             .parts
             .push(ContentPart::ImageUrl("data:image/png;base64,AA".into()));
         let err = engine
-            .check(&app_id, "openai", CredentialKind::ApiKey, "openai/gpt-5.5", &r)
+            .check(
+                &app_id,
+                "openai",
+                CredentialKind::ApiKey,
+                "openai/gpt-5.5",
+                &r,
+            )
             .unwrap_err();
         assert_eq!(err.http_status(), 422);
     }
