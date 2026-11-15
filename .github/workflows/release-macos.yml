@@ -1,0 +1,61 @@
+name: Release macOS
+
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Compilar y publicar DMG universal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Comprobar preparación de versiones
+        run: node --test scripts/tests/prepare-release-version.test.mjs
+      - name: Preparar la versión de la etiqueta
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/prepare-release-version.mjs "$RELEASE_TAG"
+      - run: npm ci
+      - name: Compilar aplicación e instalador universal
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+      - name: Verificar y publicar el instalador
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "Se esperaba un único DMG; encontrados: ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          dmg="${dmgs[0]}"
+          (cd "$(dirname "$dmg")" && shasum -a 256 "$(basename "$dmg")") > SHA256SUMS.txt
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$dmg" SHA256SUMS.txt
+          else
+            cat > /tmp/nexo-release-notes.md <<'NOTES'
+          Descarga el DMG universal para macOS, ábrelo y arrastra Nexo a Aplicaciones.
+
+          Esta versión no está notarizada por Apple. Si macOS bloquea su apertura, consulta las instrucciones de instalación del README.
+          NOTES
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes-file /tmp/nexo-release-notes.md "$dmg" SHA256SUMS.txt
+          fi

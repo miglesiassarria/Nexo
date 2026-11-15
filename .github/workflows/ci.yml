@@ -26,6 +26,8 @@ jobs:
 
       - run: npm ci
 
+      - run: node --test scripts/tests/prepare-release-version.test.mjs
+
       - run: npm run check
 
       - run: npm run site:build

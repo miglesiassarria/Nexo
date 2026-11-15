@@ -31,6 +31,8 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 
 | [0020](0020-imagenes-gemini-suscripcion/spec.md) | Imágenes en Gemini por suscripción | `build` | Conversión de imágenes y catálogo; pendiente de verificación real |
 
+| [0021](0021-release-macos/spec.md) | Release automática para macOS | `build` | DMG universal por etiqueta numerada |
+
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

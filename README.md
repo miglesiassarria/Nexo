@@ -43,7 +43,15 @@ Primera versión funcional. Lo que hay hoy:
 | Capacidades y precio de esos modelos cruzados con `models.dev` | ✅ |
 | Gemini por OAuth, Anthropic-compatible, Ollama, MLX, llama.cpp | ⬜ ver [ROADMAP](ROADMAP.md) |
 
-## Requisitos
+## Descargar para macOS
+
+Descarga el DMG de la [última release de Nexo](https://github.com/miglesiassarria/Nexo/releases/latest), ábrelo y arrastra Nexo a Aplicaciones. El instalador es universal para Mac con Apple Silicon e Intel y requiere macOS 11 o posterior.
+
+La aplicación aún no está firmada con un certificado de desarrollador de Apple ni notarizada. Si macOS bloquea su apertura, intenta abrirla y después ve a **Ajustes del Sistema → Privacidad y seguridad → Abrir igualmente**; macOS puede pedirte confirmación. Hazlo solo si has descargado el DMG de la página oficial de releases. La release incluye `SHA256SUMS.txt` para comprobar la descarga.
+
+Cada etiqueta `vX.Y.Z` o `X.Y.Z` publicada en GitHub genera automáticamente una release con esa versión. El workflow no crea etiquetas; no se publicará ningún instalador si la compilación falla.
+
+## Requisitos para compilar
 
 - Rust estable (probado con 1.96)
 - Node.js 20 o superior
