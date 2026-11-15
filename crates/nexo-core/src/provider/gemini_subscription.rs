@@ -427,22 +427,9 @@ fn descriptor(raw_id: &str, value: &Value) -> Option<ModelDescriptor> {
         .and_then(Value::as_array);
     let vision = modalities
         .map(|items| items.iter().any(|item| item.as_str() == Some("IMAGE")))
-        .unwrap_or_else(|| {
-            // Alias conocidos de modelos multimodales; los nombres futuros no se infieren.
-            [
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "gemini-3-flash",
-                "gemini-3.8-flash",
-            ]
-            .iter()
-            .any(|base| {
-                api_id == *base
-                    || api_id
-                        .strip_prefix(base)
-                        .is_some_and(|suffix| suffix.starts_with('-'))
-            })
-        });
+        // Si Google no informa modalidades, los modelos Gemini se tratan como
+        // multimodales; una declaración explícita del catálogo siempre prevalece.
+        .unwrap_or_else(|| api_id.starts_with("gemini-"));
     let reasoning = api_id.contains("gemini-2.5") || api_id.contains("gemini-3");
     let input_max = value
         .get("inputTokenLimit")
@@ -744,6 +731,16 @@ mod tests {
             .caps
             .vision
         );
+    }
+
+    #[test]
+    fn gemini_models_default_to_vision_when_modalities_are_missing() {
+        for id in ["gemini-4-argon-medium", "gemini-9-future"] {
+            assert!(descriptor(id, &json!({})).unwrap().caps.vision, "{id}");
+            assert!(!descriptor(id, &json!({"inputModalities": ["TEXT"]})).unwrap().caps.vision);
+        }
+        assert!(!descriptor("claude-future", &json!({})).unwrap().caps.vision);
+        assert!(descriptor("claude-future", &json!({"inputModalities": ["IMAGE"]})).unwrap().caps.vision);
     }
 
     #[test]

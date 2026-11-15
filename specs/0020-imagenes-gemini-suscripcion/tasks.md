@@ -5,3 +5,5 @@
 - [ ] Ejecutar verificación completa e instalar la aplicación: `cargo test --workspace && cargo clippy --workspace --all-targets && npm run check && npm run app:install`.
 - [x] Comprobar imagen real con cuenta y modelo de suscripción y verificar catálogo actualizado: `gemini-3.8-flash-high` respondió HTTP 200 y describió la imagen; el catálogo instalado marca visión.
 - La batería completa falló dos veces en `lan_mode_serves_plain_http_over_the_network`: la conexión a 100.96.0.1 agotó el tiempo. Clippy y `npm run check` pasaron; instalada el 15/11/2026 a las 18:42:53.
+
+- [x] Corregir el falso rechazo de Argon y futuros Gemini: la prueba `gemini_models_default_to_vision_when_modalities_are_missing` falló antes y pasó después, incluyendo prioridad de modalidades explícitas; `gemini-4-argon-medium` describió una imagen real con HTTP 200 tras instalar el 15/11/2026 a las 18:53:26.
