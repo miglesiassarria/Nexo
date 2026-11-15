@@ -10,9 +10,10 @@ use crate::provider::{
     UsageSource,
 };
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -285,7 +286,8 @@ fn build_contents(messages: &[Message]) -> Result<Vec<Value>, AdapterError> {
                         parts.push(json!({"text": text}));
                     }
                 }
-                ContentPart::ImageUrl(_) | ContentPart::Audio { .. } | ContentPart::File { .. } => {
+                ContentPart::ImageUrl(url) => parts.push(image_part(url)?),
+                ContentPart::Audio { .. } | ContentPart::File { .. } => {
                     return Err(AdapterError::Unsupported {
                         capability: "vision/audio".into(),
                         hint: Some(
@@ -346,6 +348,34 @@ fn build_contents(messages: &[Message]) -> Result<Vec<Value>, AdapterError> {
     Ok(contents)
 }
 
+fn image_part(url: &str) -> Result<Value, AdapterError> {
+    let (header, data) = url.split_once(',').ok_or_else(|| AdapterError::Unsupported {
+        capability: "vision".into(),
+        hint: Some("Gemini por suscripción solo admite imágenes adjuntas como data URL base64; adjunta la imagen directamente".into()),
+    })?;
+    let mime = header
+        .strip_prefix("data:")
+        .and_then(|h| h.strip_suffix(";base64"));
+    let mime = mime
+        .filter(|m| {
+            matches!(
+                *m,
+                "image/png" | "image/jpeg" | "image/webp" | "image/heic" | "image/heif"
+            )
+        })
+        .ok_or_else(|| AdapterError::Malformed {
+            detail:
+                "Imagen inválida o formato no admitido; usa PNG, JPEG, WebP, HEIC o HEIF en base64"
+                    .into(),
+        })?;
+    if data.is_empty() || STANDARD.decode(data).is_err() {
+        return Err(AdapterError::Malformed {
+            detail: "La imagen contiene datos base64 inválidos".into(),
+        });
+    }
+    Ok(json!({"inlineData": {"mimeType": mime, "data": data}}))
+}
+
 fn tool_choice(choice: &ToolChoice) -> Value {
     match choice {
         ToolChoice::None => json!({"mode": "NONE"}),
@@ -397,7 +427,9 @@ fn descriptor(raw_id: &str, value: &Value) -> Option<ModelDescriptor> {
         .and_then(Value::as_array);
     let vision = modalities
         .map(|items| items.iter().any(|item| item.as_str() == Some("IMAGE")))
-        .unwrap_or(false);
+        // Si Google no informa modalidades, los modelos Gemini se tratan como
+        // multimodales; una declaración explícita del catálogo siempre prevalece.
+        .unwrap_or_else(|| api_id.starts_with("gemini-"));
     let reasoning = api_id.contains("gemini-2.5") || api_id.contains("gemini-3");
     let input_max = value
         .get("inputTokenLimit")
@@ -645,9 +677,9 @@ fn truncate(value: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::provider::{Message, ToolCall, ToolDef};
-    use axum::Router;
     use axum::extract::Json as AxumJson;
     use axum::routing::post;
+    use axum::Router;
 
     fn request() -> ChatRequest {
         ChatRequest {
@@ -673,17 +705,69 @@ mod tests {
     }
 
     #[test]
+    fn image_data_is_translated_and_known_gemini_models_declare_vision() {
+        let mut req = request();
+        req.messages[0]
+            .parts
+            .push(ContentPart::ImageUrl("data:image/png;base64,aGk=".into()));
+        let body = build_request(&req, "project-1").unwrap();
+        assert_eq!(
+            body["request"]["contents"][0]["parts"][1]["inlineData"],
+            json!({"mimeType":"image/png","data":"aGk="})
+        );
+        assert!(
+            descriptor("gemini-3.8-flash-high", &json!({}))
+                .unwrap()
+                .caps
+                .vision
+        );
+        assert!(!descriptor("unknown", &json!({})).unwrap().caps.vision);
+        assert!(
+            !descriptor(
+                "gemini-3.8-flash-high",
+                &json!({"inputModalities":["TEXT"]})
+            )
+            .unwrap()
+            .caps
+            .vision
+        );
+    }
+
+    #[test]
+    fn gemini_models_default_to_vision_when_modalities_are_missing() {
+        for id in ["gemini-4-argon-medium", "gemini-9-future"] {
+            assert!(descriptor(id, &json!({})).unwrap().caps.vision, "{id}");
+            assert!(!descriptor(id, &json!({"inputModalities": ["TEXT"]})).unwrap().caps.vision);
+        }
+        assert!(!descriptor("claude-future", &json!({})).unwrap().caps.vision);
+        assert!(descriptor("claude-future", &json!({"inputModalities": ["IMAGE"]})).unwrap().caps.vision);
+    }
+
+    #[test]
+    fn image_inputs_reject_invalid_or_remote_data() {
+        for url in [
+            "https://example.com/image.png",
+            "data:image/png;base64,@@@",
+            "data:text/plain;base64,aGk=",
+        ] {
+            let mut req = request();
+            req.messages[0]
+                .parts
+                .push(ContentPart::ImageUrl(url.into()));
+            assert!(build_request(&req, "project-1").is_err());
+        }
+    }
+
+    #[test]
     fn request_uses_code_assist_envelope_and_camel_case_fields() {
         let body = build_request(&request(), "project-1").unwrap();
         assert_eq!(body["project"], "project-1");
         assert_eq!(body["request"]["contents"][0]["role"], "user");
         assert_eq!(body["request"]["generationConfig"]["maxOutputTokens"], 100);
-        assert!(
-            body["user_prompt_id"]
-                .as_str()
-                .unwrap()
-                .starts_with("nexo-")
-        );
+        assert!(body["user_prompt_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("nexo-"));
     }
 
     #[test]
@@ -774,6 +858,10 @@ mod tests {
                 post(|AxumJson(body): AxumJson<Value>| async move {
                     assert_eq!(body["project"], "project-1");
                     assert_eq!(body["model"], "gemini-2.5-flash");
+                    assert_eq!(
+                        body["request"]["contents"][0]["parts"][1]["inlineData"]["data"],
+                        "aGk="
+                    );
                     AxumJson(json!({
                         "traceId": "trace-test",
                         "response": {
@@ -791,7 +879,8 @@ mod tests {
             );
         let app = app.route(
             "/v1internal:streamGenerateContent",
-            post(|| async {
+            post(|AxumJson(body): AxumJson<Value>| async move {
+                assert_eq!(body["request"]["contents"][0]["parts"][1]["inlineData"]["data"], "aGk=");
                 let first = json!({"traceId":"trace-stream","response":{"candidates":[{"content":{"parts":[{"text":"st"}]}}]}});
                 let last = json!({"response":{"candidates":[{"content":{"parts":[{"text":"ream"}]},"finishReason":"STOP"}]}});
                 (
@@ -833,6 +922,9 @@ mod tests {
         assert_eq!(catalog[0].limits.input_max, Some(1000));
 
         let mut req = request();
+        req.messages[0]
+            .parts
+            .push(ContentPart::ImageUrl("data:image/png;base64,aGk=".into()));
         req.stream = false;
         let events = adapter
             .stream(&req, &cred)

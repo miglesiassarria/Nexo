@@ -1,0 +1,3 @@
+# Diseño
+
+El adaptador de suscripción traduce data URL base64 a `inlineData` con MIME y datos, valida el formato y rechaza URL remotas sin descargarlas. El catálogo respeta `inputModalities` cuando existe; cuando falta, presume visión para cualquier identificador `gemini-`, incluidos modelos futuros. Se descartó declarar visión a todos los modelos de la cuenta porque incluye modelos de otros fabricantes. Una declaración explícita de Google prevalece sobre el supuesto. Los cambios quedan aislados en el adaptador; no se necesita ADR. La compatibilidad del backend interno requiere una prueba real independiente del contrato simulado.
