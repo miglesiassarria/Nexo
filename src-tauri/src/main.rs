@@ -61,6 +61,7 @@ fn main() {
             commands::grantable_routes,
             commands::app_route_models,
             commands::set_app_models,
+            commands::set_limit_disabled,
             commands::catalog,
             commands::refresh_catalog,
             commands::usage_summary,

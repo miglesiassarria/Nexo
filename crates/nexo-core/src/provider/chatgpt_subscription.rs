@@ -199,7 +199,9 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
             .bytes_stream()
             .eventsource()
             .map(|item| match item {
-                Err(e) => Err(AdapterError::Transport { detail: e.to_string() }),
+                Err(e) => Err(AdapterError::Transport {
+                    detail: e.to_string(),
+                }),
                 Ok(event) => Ok(event),
             })
             .flat_map(move |item| {
@@ -218,7 +220,9 @@ impl ProviderAdapter for ChatgptSubscriptionAdapter {
                                 })],
                                 Ok(value) => {
                                     match translator.translate_event(&event.event, &value) {
-                                        Translated::Events(evs) => evs.into_iter().map(Ok).collect(),
+                                        Translated::Events(evs) => {
+                                            evs.into_iter().map(Ok).collect()
+                                        }
                                         Translated::Failure(e) => vec![Err(e)],
                                         Translated::Ignored => vec![],
                                     }
@@ -381,7 +385,10 @@ fn classify_http_error(
             ),
             reauth_required: true,
         },
-        429 => AdapterError::RateLimited { retry_after },
+        429 => AdapterError::RateLimited {
+            retry_after,
+            detail: "El proveedor rechazó la petición".into(),
+        },
         // Un 404 o un 400 en un endpoint que ayer funcionaba es la firma de
         // que el flujo no soportado ha cambiado, no un error del cliente.
         400 | 404 | 410 => AdapterError::SubscriptionPathBroken {
@@ -574,7 +581,9 @@ mod tests {
     #[test]
     fn auth_errors_request_reauth() {
         match classify_http_error(401, None, "no") {
-            AdapterError::Auth { reauth_required, .. } => assert!(reauth_required),
+            AdapterError::Auth {
+                reauth_required, ..
+            } => assert!(reauth_required),
             other => panic!("esperaba Auth, llegó {other:?}"),
         }
     }
@@ -582,7 +591,7 @@ mod tests {
     #[test]
     fn rate_limit_propagates_retry_after() {
         match classify_http_error(429, Some(Duration::from_secs(30)), "") {
-            AdapterError::RateLimited { retry_after } => {
+            AdapterError::RateLimited { retry_after, .. } => {
                 assert_eq!(retry_after, Some(Duration::from_secs(30)));
             }
             other => panic!("esperaba RateLimited, llegó {other:?}"),
@@ -685,7 +694,10 @@ mod tests {
             ],
             "los niveles llegan con su nombre y en el orden que los publica el proveedor"
         );
-        assert!(m.caps.reasoning, "con niveles, la capacidad sigue siendo cierta");
+        assert!(
+            m.caps.reasoning,
+            "con niveles, la capacidad sigue siendo cierta"
+        );
     }
 
     #[test]

@@ -656,7 +656,44 @@ fn classify_http_error(status: u16, retry_after: Option<Duration>, body: &str) -
             ),
             reauth_required: true,
         },
-        429 => AdapterError::RateLimited { retry_after },
+        429 => {
+            let reason = structured
+                .as_ref()
+                .and_then(|v| v.pointer("/error/details"))
+                .and_then(Value::as_array)
+                .and_then(|details| {
+                    details
+                        .iter()
+                        .filter_map(|d| d.get("reason").and_then(Value::as_str))
+                        .find(|r| {
+                            matches!(
+                                *r,
+                                "RATE_LIMIT_EXCEEDED"
+                                    | "QUOTA_EXHAUSTED"
+                                    | "RESOURCE_EXHAUSTED"
+                                    | "MODEL_CAPACITY_EXHAUSTED"
+                            )
+                        })
+                })
+                .or_else(|| structured.as_ref().and_then(|v| v.pointer("/error/status")).and_then(Value::as_str).filter(|s| *s == "RESOURCE_EXHAUSTED"));
+            let detail = match reason {
+                Some("RATE_LIMIT_EXCEEDED") => {
+                    "Google informa de un límite de frecuencia (RATE_LIMIT_EXCEEDED)"
+                }
+                Some("QUOTA_EXHAUSTED") => "Google informa de cuota agotada (QUOTA_EXHAUSTED)",
+                Some("MODEL_CAPACITY_EXHAUSTED") => {
+                    "Google informa de capacidad agotada para el modelo (MODEL_CAPACITY_EXHAUSTED)"
+                }
+                Some("RESOURCE_EXHAUSTED") => {
+                    "Google informa de recursos agotados; comprueba la cuota de la cuenta o del modelo (RESOURCE_EXHAUSTED)"
+                }
+                _ => "Google rechazó la petición con HTTP 429; no proporcionó un motivo reconocido",
+            };
+            AdapterError::RateLimited {
+                retry_after,
+                detail: detail.into(),
+            }
+        }
         _ => AdapterError::Upstream {
             status,
             provider_code,
@@ -737,10 +774,20 @@ mod tests {
     fn gemini_models_default_to_vision_when_modalities_are_missing() {
         for id in ["gemini-4-argon-medium", "gemini-9-future"] {
             assert!(descriptor(id, &json!({})).unwrap().caps.vision, "{id}");
-            assert!(!descriptor(id, &json!({"inputModalities": ["TEXT"]})).unwrap().caps.vision);
+            assert!(
+                !descriptor(id, &json!({"inputModalities": ["TEXT"]}))
+                    .unwrap()
+                    .caps
+                    .vision
+            );
         }
         assert!(!descriptor("claude-future", &json!({})).unwrap().caps.vision);
-        assert!(descriptor("claude-future", &json!({"inputModalities": ["IMAGE"]})).unwrap().caps.vision);
+        assert!(
+            descriptor("claude-future", &json!({"inputModalities": ["IMAGE"]}))
+                .unwrap()
+                .caps
+                .vision
+        );
     }
 
     #[test]
@@ -823,6 +870,25 @@ mod tests {
                 reason: FinishReason::Stop
             }
         ));
+    }
+
+    #[test]
+    fn google_429_reports_safe_recognized_reason_and_retry() {
+        let error = classify_http_error(429, Some(Duration::from_secs(30)), r#"{"error":{"message":"secret-value","details":[{"reason":"QUOTA_EXHAUSTED"}]}}"#);
+        assert_eq!(error.kind_str(), "rate_limited");
+        let body = crate::gateway::wire::error_body(&error).to_string();
+        assert!(body.contains("QUOTA_EXHAUSTED"));
+        assert!(body.contains("30"));
+        assert!(!body.contains("secret-value"));
+        let unknown = classify_http_error(429, None, "secret-value").to_string();
+        assert!(!unknown.contains("secret-value"));
+    }
+
+    #[test]
+    fn google_resource_exhausted_status_is_recognized_without_details() {
+        let error = classify_http_error(429, None, r#"{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}"#);
+        assert!(error.to_string().contains("RESOURCE_EXHAUSTED"));
+        assert!(error.to_string().contains("cuota"));
     }
 
     #[test]

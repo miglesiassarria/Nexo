@@ -460,8 +460,7 @@ impl Nexo {
                 continue;
             }
             let mut account = account;
-            if account.provider_id == gemini_subscription::PROVIDER
-                && account.status == "degraded"
+            if account.provider_id == gemini_subscription::PROVIDER && account.status == "degraded"
             {
                 self.try_recover_gemini_account(&mut account).await;
             }
@@ -512,14 +511,10 @@ impl Nexo {
     /// OAuth en estado degradado. El intento solo ocurre para esa cuenta y no
     /// inventa ni crea un proyecto: usa únicamente el que Google devuelva.
     async fn try_recover_gemini_account(&self, account: &mut Account) {
-        let Ok(Some(access_token)) = self
-            .secrets
-            .get(&SecretRef::access(&account.id))
-        else {
+        let Ok(Some(access_token)) = self.secrets.get(&SecretRef::access(&account.id)) else {
             return;
         };
-        let Ok(mut bootstrap) =
-            gemini_subscription::bootstrap(&self.http, &access_token).await
+        let Ok(mut bootstrap) = gemini_subscription::bootstrap(&self.http, &access_token).await
         else {
             return;
         };
@@ -1962,7 +1957,9 @@ impl Nexo {
                 let equivalent_model = self
                     .db
                     .catalog_rows()
-                    .map_err(|e| AdapterError::Transport { detail: e.to_string() })?
+                    .map_err(|e| AdapterError::Transport {
+                        detail: e.to_string(),
+                    })?
                     .into_iter()
                     .any(|row| {
                         row.provider_id == fallback_provider
@@ -3154,7 +3151,8 @@ mod tests {
             hint: None
         }));
         assert!(!is_fallback_worthy(&AdapterError::RateLimited {
-            retry_after: None
+            retry_after: None,
+            detail: String::new(),
         }));
         assert!(!is_fallback_worthy(&AdapterError::LocalLimit {
             app_id: "a".into(),
@@ -3191,7 +3189,10 @@ mod tests {
     fn collector_closes_on_error_with_its_kind() {
         let mut c = Collector::new();
         assert!(!c.is_closed());
-        c.observe_error(&AdapterError::RateLimited { retry_after: None });
+        c.observe_error(&AdapterError::RateLimited {
+            retry_after: None,
+            detail: "El proveedor rechazó la petición".into(),
+        });
         assert!(c.is_closed());
         assert_eq!(c.error_kind(), Some("rate_limited"));
         assert_eq!(c.http_status(), Some(429));

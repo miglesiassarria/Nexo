@@ -613,8 +613,11 @@ pub enum AdapterError {
         reauth_required: bool,
     },
 
-    #[error("el proveedor limitó la tasa")]
-    RateLimited { retry_after: Option<Duration> },
+    #[error("el proveedor limitó la tasa: {detail}")]
+    RateLimited {
+        retry_after: Option<Duration>,
+        detail: String,
+    },
 
     /// Límite de Nexo, no del proveedor. Se distingue en las estadísticas.
     #[error("límite local de la aplicación {app_id}")]
@@ -896,7 +899,10 @@ mod tests {
             window_secs: 60,
             detail: String::new(),
         };
-        let remote = AdapterError::RateLimited { retry_after: None };
+        let remote = AdapterError::RateLimited {
+            retry_after: None,
+            detail: "El proveedor rechazó la petición".into(),
+        };
         assert_eq!(local.http_status(), remote.http_status());
         assert_ne!(local.kind_str(), remote.kind_str());
     }

@@ -257,7 +257,7 @@
                     </span>
                   {:else}
                     <span class="badge err" title={r.error_kind ?? ""}>
-                      {r.error_kind ?? r.status}
+                      {r.error_kind === "rate_limited" ? "Límite del proveedor" : r.error_kind === "local_limit" ? "Límite de Nexo" : (r.error_kind ?? r.status)}
                     </span>
                   {/if}
                 </td>

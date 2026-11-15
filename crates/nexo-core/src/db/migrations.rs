@@ -5,7 +5,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const CURRENT_VERSION: i64 = 5;
+pub const CURRENT_VERSION: i64 = 6;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -44,8 +44,22 @@ pub fn apply(conn: &Connection) -> Result<()> {
         tracing::info!("esquema migrado a la versión 5");
     }
 
+    if version < 6 {
+        conn.execute_batch(V6)?;
+        conn.pragma_update(None, "user_version", 6)?;
+    }
+
     Ok(())
 }
+
+const V6: &str = r#"
+CREATE TABLE app_limit_disabled (
+  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL,
+  credential_kind TEXT NOT NULL,
+  PRIMARY KEY (app_id, provider_id, credential_kind)
+);
+"#;
 
 const V1: &str = r#"
 -- Cuentas y credenciales. Ningún secreto vive aquí: solo la referencia al

@@ -33,6 +33,8 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 
 | [0021](0021-release-macos/spec.md) | Release automática para macOS | `build` | DMG universal por etiqueta numerada |
 
+| [0022](0022-limites-y-errores-gemini/spec.md) | Límites por aplicación y errores de Gemini | `build` | Límites opcionales explícitos y diagnóstico de errores 429; ver ADR 0008 |
+
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no

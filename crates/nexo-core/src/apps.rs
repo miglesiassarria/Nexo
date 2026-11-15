@@ -62,7 +62,10 @@ pub struct ModelGrant {
 impl ModelGrant {
     /// Atajo para los sitios que solo marcan el modelo, sin nivel.
     pub fn plain(public_name: impl Into<String>) -> Self {
-        Self { public_name: public_name.into(), reasoning_effort: None }
+        Self {
+            public_name: public_name.into(),
+            reasoning_effort: None,
+        }
     }
 }
 
@@ -319,6 +322,40 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    pub fn disabled_limits(&self, app_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT provider_id, credential_kind FROM app_limit_disabled WHERE app_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![app_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn set_limit_disabled(
+        &self,
+        app_id: &str,
+        provider_id: &str,
+        kind: CredentialKind,
+        disabled: bool,
+    ) -> Result<()> {
+        let conn = self.lock();
+        if disabled {
+            let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM app_limits WHERE app_id=?1 AND provider_id=?2 AND credential_kind=?3 AND max_requests > 0)", params![app_id, provider_id, kind.as_str()], |r| r.get(0))?;
+            if !valid {
+                return Err(CoreError::Config(
+                    "Configura primero un límite válido".into(),
+                ));
+            }
+            conn.execute(
+                "INSERT OR IGNORE INTO app_limit_disabled VALUES (?1,?2,?3)",
+                params![app_id, provider_id, kind.as_str()],
+            )?;
+        } else {
+            conn.execute("DELETE FROM app_limit_disabled WHERE app_id=?1 AND provider_id=?2 AND credential_kind=?3", params![app_id, provider_id, kind.as_str()])?;
+        }
+        Ok(())
+    }
+
     /// Concede acceso y, si la vía es de suscripción, fija a la vez el límite
     /// obligatorio. No existe forma de conceder lo uno sin lo otro: es lo que
     /// hace que los ocho parámetros viajen juntos en lugar de por separado.
@@ -435,7 +472,11 @@ impl Db {
                         // diferencia que introduce la spec 0009 y el sitio exacto
                         // donde sería fácil escribir el mismo valor en todas las
                         // filas sin que ninguna prueba de un solo modelo lo notara.
-                        entry.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                        entry
+                            .reasoning_effort
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty()),
                     ],
                 )?;
             }
@@ -448,6 +489,10 @@ impl Db {
             let max = max_requests
                 .unwrap_or(crate::config::DEFAULT_SUBSCRIPTION_LIMIT_REQUESTS)
                 .max(1);
+            if window_seconds.is_some() {
+                let conn = self.lock();
+                conn.execute("DELETE FROM app_limits WHERE app_id=?1 AND provider_id=?2 AND credential_kind=?3 AND window_seconds != ?4", params![app_id, provider_id, kind.as_str(), window])?;
+            }
             self.set_limit(
                 app_id,
                 &Limit {
@@ -476,8 +521,9 @@ impl Db {
                  WHERE l.app_id = g.app_id
                    AND l.provider_id = g.provider_id
                    AND l.credential_kind = g.credential_kind
-                   AND l.max_requests IS NOT NULL
-               )",
+                   AND l.max_requests > 0
+               )
+               AND NOT EXISTS (SELECT 1 FROM app_limit_disabled d WHERE d.app_id=g.app_id AND d.provider_id=g.provider_id AND d.credential_kind=g.credential_kind)",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -524,7 +570,10 @@ mod tests {
     fn authenticate_accepts_valid_token_and_updates_last_seen() {
         let db = db();
         let issued = db.create_app("cliente", None).unwrap();
-        let app = db.authenticate(&issued.token).unwrap().expect("autenticado");
+        let app = db
+            .authenticate(&issued.token)
+            .unwrap()
+            .expect("autenticado");
         assert_eq!(app.id, issued.app.id);
         assert!(db.apps().unwrap()[0].last_seen_at.is_some());
     }
@@ -590,12 +639,20 @@ mod tests {
         )
         .unwrap();
 
-        let mut patterns: Vec<String> =
-            db.grants(&app.id).unwrap().into_iter().map(|g| g.model_pattern).collect();
+        let mut patterns: Vec<String> = db
+            .grants(&app.id)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.model_pattern)
+            .collect();
         patterns.sort();
         assert_eq!(patterns, vec!["zen/dos", "zen/uno"]);
         // Las capacidades son de la vía: iguales en todas sus filas.
-        assert!(db.grants(&app.id).unwrap().iter().all(|g| g.allow_tools && !g.allow_multimodal));
+        assert!(db
+            .grants(&app.id)
+            .unwrap()
+            .iter()
+            .all(|g| g.allow_tools && !g.allow_multimodal));
     }
 
     /// Criterio 2 de la spec 0009. Usa **dos** modelos con niveles distintos a
@@ -716,9 +773,17 @@ mod tests {
         put(&["zen/uno", "zen/dos", "zen/tres"]);
         put(&["zen/dos"]);
 
-        let patterns: Vec<String> =
-            db.grants(&app.id).unwrap().into_iter().map(|g| g.model_pattern).collect();
-        assert_eq!(patterns, vec!["zen/dos"], "reemplazar sustituye, no acumula");
+        let patterns: Vec<String> = db
+            .grants(&app.id)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.model_pattern)
+            .collect();
+        assert_eq!(
+            patterns,
+            vec!["zen/dos"],
+            "reemplazar sustituye, no acumula"
+        );
     }
 
     #[test]
@@ -738,8 +803,17 @@ mod tests {
         .unwrap();
         assert_eq!(db.grants(&app.id).unwrap().len(), 1);
 
-        db.replace_app_models(&app.id, "zen", CredentialKind::ApiKey, &[], true, true, None, None)
-            .unwrap();
+        db.replace_app_models(
+            &app.id,
+            "zen",
+            CredentialKind::ApiKey,
+            &[],
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(
             db.grants(&app.id).unwrap().is_empty(),
             "sin modelos marcados no hay vía concedida: no existe el estado intermedio"
@@ -774,8 +848,17 @@ mod tests {
         .unwrap();
 
         // Y borrar una vía entera no toca la otra.
-        db.replace_app_models(&app.id, "zen", CredentialKind::ApiKey, &[], true, true, None, None)
-            .unwrap();
+        db.replace_app_models(
+            &app.id,
+            "zen",
+            CredentialKind::ApiKey,
+            &[],
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
         let grants = db.grants(&app.id).unwrap();
         assert_eq!(grants.len(), 2);
         assert!(grants.iter().all(|g| g.provider_id == "lmstudio"));
@@ -783,6 +866,19 @@ mod tests {
 
     /// El ADR 0001 no se relaja por poder elegir modelos: marcar uno solo de la vía de
     /// suscripción sigue creando su límite obligatorio.
+    #[test]
+    fn changing_window_removes_the_old_hidden_limit() {
+        let db = Db::open_in_memory().unwrap();
+        let app = db.create_app("cliente", None).unwrap();
+        let models = [ModelGrant::plain("openai/model")];
+        for window in [3600, 60] {
+            db.replace_app_models(&app.app.id, "openai", CredentialKind::SubscriptionOauth, &models, true, true, Some(3000), Some(window)).unwrap();
+        }
+        let limits = db.limits(&app.app.id).unwrap();
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].window_seconds, 60);
+    }
+
     #[test]
     fn marking_a_single_subscription_model_still_creates_the_mandatory_limit() {
         let db = db();

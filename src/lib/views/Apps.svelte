@@ -250,6 +250,18 @@
     return [...byRoute.values()];
   }
 
+  function limitDisabled(appId: string, route: GrantableRoute) {
+    return details[appId]?.disabled_limits.some(([provider, kind]) => provider === route.provider_id && kind === route.credential_kind) ?? false;
+  }
+
+  async function toggleLimit(app: App, route: GrantableRoute, disabled: boolean) {
+    try {
+      await api.setLimitDisabled({ appId: app.id, providerId: route.provider_id, credentialKind: route.credential_kind, disabled });
+      await load();
+      onchange();
+    } catch (e) { error = errorText(e); }
+  }
+
   async function updateLimit(
     app: App,
     route: GrantableRoute,
@@ -567,11 +579,13 @@
               {/if}
 
               {#if grant && route.requires_limit}
+                <label class="check"><input type="checkbox" checked={!limitDisabled(app.id, route)} onchange={(e) => toggleLimit(app, route, !e.currentTarget.checked)} /> Límite de Nexo activo</label>
                 <div class="limit">
-                  <span class="muted small">Límite obligatorio:</span>
+                  <span class="muted small">Límite:</span>
                   <input
                     type="number"
                     min="1"
+                    disabled={limitDisabled(app.id, route)}
                     value={limit?.max_requests ?? 60}
                     onchange={(e) =>
                       updateLimit(
@@ -583,6 +597,7 @@
                   />
                   <span class="muted small">peticiones cada</span>
                   <select
+                    disabled={limitDisabled(app.id, route)}
                     value={String(limit?.window_seconds ?? 3600)}
                     onchange={(e) =>
                       updateLimit(
@@ -599,7 +614,7 @@
                 </div>
                 <p class="muted small">
                   Esta vía reparte la cuota de tu suscripción personal entre todas las
-                  aplicaciones. Sin límite, Nexo rechaza las peticiones.
+                  aplicaciones. Desactivar el límite de Nexo no elimina los límites del proveedor.
                 </p>
               {/if}
             </div>
