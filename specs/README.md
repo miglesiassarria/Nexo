@@ -29,6 +29,8 @@ resumida en el [README](../README.md#cómo-se-desarrolla-aquí).
 | [0018](0018-gemini-por-suscripcion/spec.md) | Gemini por suscripción | `build` | Vía OAuth de Antigravity/Code Assist separada de Gemini por API key; validada manualmente con una cuenta real |
 | [0019](0019-actualizar-automaticamente-el-catalogo-de-chatgp/spec.md) | Actualizar automáticamente el catálogo de ChatGPT por suscripción | `build` | Negociación interna de versiones al refrescar para capturar familias nuevas sin ajustes manuales |
 
+| [0020](0020-imagenes-gemini-suscripcion/spec.md) | Imágenes en Gemini por suscripción | `build` | Conversión de imágenes y catálogo; pendiente de verificación real |
+
 Estados: `spec` · `design` · `tasks` · `build` · `hecho` · `descartado`
 
 ## Qué va aquí y qué no
